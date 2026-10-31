@@ -15,8 +15,21 @@ GOBIN=/tmp/isureal-profile-bin go install github.com/mazrean/isucrud@v1.5.0
 
 ```sh
 cd webapp/go
-/tmp/isureal-profile-bin/isucrud -dst ../../artifacts/profiles/db-access.md ./...
+GOTOOLCHAIN=go1.26.5 /tmp/isureal-profile-bin/isucrud -dst ../../artifacts/profiles/db-access.md ./...
 ```
+
+isucrud v1.5.0 は Go 1.27 で標準ライブラリの型解析に失敗したため、解析対象と同じ Go 1.26.5 を指定する。
+
+## 1走行の取得
+
+リポジトリのルートから実行する。`bench` スキルのローカルサーバー・拡張が動いていることを前提に、計測開始、エンキュー、完了待ち、計測停止、ログ回収を行う。
+
+```sh
+python3 tools/profile/run.py 'baseline 計測のみ'
+python3 tools/profile/summarize.py artifacts/profiles/取得時刻
+```
+
+`run.py` は SQL 統計をリセットせず前後を取得する。`summarize.py` はその差分、alp の全体・地域別集計、ホスト資源と DB 待機状態の要約を出力する。ベンチのエンキューが失敗した場合は、スクリプトの終了コードと `bench` スキルの指示を確認する。
 
 ## 計測上の注意
 
