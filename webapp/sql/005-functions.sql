@@ -306,3 +306,29 @@ BEGIN
 END $$;
 CREATE TRIGGER users_version_bump AFTER INSERT OR DELETE OR UPDATE OF username, display_name, status ON users
   FOR EACH STATEMENT EXECUTE FUNCTION isu_bump_users_version();
+
+-- 新しい期間と通知を先に作り、最後に切り替える。旧期間の行を掴むのは切り替えの間だけで、
+-- 投稿は通知の一括 INSERT を待たない。コミットまで他のトランザクションには見えない。
+DROP FUNCTION IF EXISTS isu_open_posting_window(text, text, date, bigint);
+CREATE FUNCTION isu_open_posting_window(p_window text, p_region text, p_date date, p_seconds bigint)
+RETURNS TABLE (result text, starts_at timestamptz, on_time_deadline timestamptz) LANGUAGE plpgsql AS $$
+#variable_conflict use_column
+DECLARE
+  v_starts timestamptz;
+  v_deadline timestamptz;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended('posting_window:' || p_region, 0));
+  IF EXISTS(SELECT 1 FROM posting_windows w WHERE w.region = p_region AND w.local_date >= p_date) THEN
+    RETURN QUERY SELECT 'conflict'::text, NULL::timestamptz, NULL::timestamptz;
+    RETURN;
+  END IF;
+  v_starts := clock_timestamp();
+  v_deadline := v_starts + make_interval(secs => p_seconds);
+  INSERT INTO posting_windows (id, region, local_date, starts_at, on_time_deadline, ended_at)
+    VALUES (p_window, p_region, p_date, v_starts, v_deadline, v_starts);
+  INSERT INTO notifications (id, user_id, posting_window_id, created_at)
+    SELECT gen_random_uuid()::text, u.id, p_window, v_starts FROM users u WHERE u.region = p_region AND u.status = 'active';
+  UPDATE posting_windows w SET ended_at = v_starts WHERE w.region = p_region AND w.ended_at IS NULL;
+  UPDATE posting_windows w SET ended_at = NULL WHERE w.id = p_window;
+  RETURN QUERY SELECT 'ok'::text, v_starts, v_deadline;
+END $$;
