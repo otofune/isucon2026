@@ -44,7 +44,7 @@ func getMemoriesHandler(h *HandlerContext) echo.HandlerFunc {
 		if err != nil {
 			return NewAPIError(http.StatusBadRequest, "invalid_memory_period")
 		}
-		response, err := listMemories(c.Request().Context(), h.DB, GetSession(c).UserID, start, start.AddDate(0, 1, 0), input.BeforePostedAt, input.BeforeID)
+		response, err := listMemories(c.Request().Context(), h, GetSession(c).UserID, start, start.AddDate(0, 1, 0), input.BeforePostedAt, input.BeforeID)
 		if err != nil {
 			return err
 		}
@@ -62,7 +62,7 @@ func getMemoriesByDateHandler(h *HandlerContext) echo.HandlerFunc {
 		if err != nil {
 			return NewAPIError(http.StatusBadRequest, "invalid_memory_period")
 		}
-		response, err := listMemories(c.Request().Context(), h.DB, GetSession(c).UserID, start, start.AddDate(0, 0, 1), input.BeforePostedAt, input.BeforeID)
+		response, err := listMemories(c.Request().Context(), h, GetSession(c).UserID, start, start.AddDate(0, 0, 1), input.BeforePostedAt, input.BeforeID)
 		if err != nil {
 			return err
 		}
@@ -70,7 +70,8 @@ func getMemoriesByDateHandler(h *HandlerContext) echo.HandlerFunc {
 	}
 }
 
-func listMemories(ctx context.Context, db sqlx.QueryerContext, userID string, start, end time.Time, beforeAt *time.Time, beforeID string) (getMemoriesResponse, error) {
+func listMemories(ctx context.Context, h *HandlerContext, userID string, start, end time.Time, beforeAt *time.Time, beforeID string) (getMemoriesResponse, error) {
+	db := h.DB
 	var response getMemoriesResponse
 	if (beforeAt == nil) != (beforeID == "") {
 		return response, NewAPIError(http.StatusBadRequest, "invalid_pagination")
@@ -83,6 +84,27 @@ func listMemories(ctx context.Context, db sqlx.QueryerContext, userID string, st
 	if err != nil {
 		return response, err
 	}
+	if len(posts) > 50 {
+		response.HasMore = true
+		posts = posts[:50]
+	}
+	interactions, err := loadMemoryInteractions(ctx, db, posts)
+	if err != nil {
+		return response, err
+	}
+	batch := newSignatureBatch()
+	for _, post := range posts {
+		batch.add(post.Author, post.ImageID)
+		batch.addUser(post.Author)
+	}
+	for _, reaction := range interactions.reactions {
+		batch.add(reaction.Reactor, reaction.ImageID)
+		batch.addUser(reaction.Reactor)
+	}
+	for _, comment := range interactions.comments {
+		batch.addUser(comment.Author)
+	}
+	batch.offload(ctx, h)
 	items := make([]memoryPostResponse, 0, len(posts))
 	for _, post := range posts {
 		items = append(items, memoryPostResponse{
@@ -91,56 +113,71 @@ func listMemories(ctx context.Context, db sqlx.QueryerContext, userID string, st
 			Comments:           make([]createCommentResponse, 0),
 		})
 	}
-	response.HasMore = len(items) > 50
-	if response.HasMore {
-		items = items[:50]
-	}
-	if err := loadMemoryInteractions(ctx, db, items); err != nil {
-		return response, err
-	}
+	attachMemoryInteractions(items, interactions)
 	response.Items = items
 	return response, nil
 }
 
-func loadMemoryInteractions(ctx context.Context, db sqlx.QueryerContext, items []memoryPostResponse) error {
-	if len(items) == 0 {
-		return nil
+type memoryInteractions struct {
+	reactions []RealMojiWithReactor
+	comments  []CommentWithAuthor
+}
+
+func loadMemoryInteractions(ctx context.Context, db sqlx.QueryerContext, posts []PostWithAuthor) (memoryInteractions, error) {
+	var interactions memoryInteractions
+	if len(posts) == 0 {
+		return interactions, nil
 	}
-	postIDs := make([]string, len(items))
-	itemByPostID := make(map[string]*memoryPostResponse, len(items))
-	for i := range items {
-		postIDs[i] = items[i].ID
-		itemByPostID[items[i].ID] = &items[i]
+	postIDs := make([]string, len(posts))
+	for i := range posts {
+		postIDs[i] = posts[i].ID
 	}
 
 	query, args, err := sqlx.In(`AND r.post_id IN (?) ORDER BY r.created_at DESC, r.id DESC`, postIDs)
 	if err != nil {
-		return err
+		return interactions, err
 	}
 	reactions, err := selectCurrentRealMojis(ctx, db, sqlx.Rebind(sqlx.DOLLAR, query), args...)
 	if err != nil {
-		return err
+		return interactions, err
 	}
-	for _, reaction := range reactions {
-		item := itemByPostID[reaction.PostID]
-		if len(item.RealMojis) < 50 {
-			item.RealMojis = append(item.RealMojis, newRealMojiResponse(reaction.RealMoji, reaction.Reactor))
-		}
-	}
-
 	query, args, err = sqlx.In(`AND c.post_id IN (?) ORDER BY c.created_at, c.id`, postIDs)
 	if err != nil {
-		return err
+		return interactions, err
 	}
 	comments, err := selectCommentsWithAuthor(ctx, db, sqlx.Rebind(sqlx.DOLLAR, query), args...)
 	if err != nil {
-		return err
+		return interactions, err
 	}
-	for _, comment := range comments {
-		item := itemByPostID[comment.PostID]
-		if len(item.Comments) < 50 {
-			item.Comments = append(item.Comments, newCommentResponse(comment.Comment, comment.Author))
+	// 1投稿につき50件までしか返さないので、署名の対象も先に絞る。
+	reactionCounts := map[string]int{}
+	for _, reaction := range reactions {
+		if reactionCounts[reaction.PostID] < 50 {
+			reactionCounts[reaction.PostID]++
+			interactions.reactions = append(interactions.reactions, reaction)
 		}
 	}
-	return nil
+	commentCounts := map[string]int{}
+	for _, comment := range comments {
+		if commentCounts[comment.PostID] < 50 {
+			commentCounts[comment.PostID]++
+			interactions.comments = append(interactions.comments, comment)
+		}
+	}
+	return interactions, nil
+}
+
+func attachMemoryInteractions(items []memoryPostResponse, interactions memoryInteractions) {
+	itemByPostID := make(map[string]*memoryPostResponse, len(items))
+	for i := range items {
+		itemByPostID[items[i].ID] = &items[i]
+	}
+	for _, reaction := range interactions.reactions {
+		item := itemByPostID[reaction.PostID]
+		item.RealMojis = append(item.RealMojis, newRealMojiResponse(reaction.RealMoji, reaction.Reactor))
+	}
+	for _, comment := range interactions.comments {
+		item := itemByPostID[comment.PostID]
+		item.Comments = append(item.Comments, newCommentResponse(comment.Comment, comment.Author))
+	}
 }

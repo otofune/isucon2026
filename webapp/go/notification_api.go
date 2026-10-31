@@ -6,10 +6,36 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/labstack/echo/v5"
 )
+
+const notificationPollInterval = 1500 * time.Millisecond
+
+// notificationHub は待機中の SSE を一斉に起こす。
+type notificationHub struct {
+	mu     sync.Mutex
+	signal chan struct{}
+}
+
+func newNotificationHub() *notificationHub {
+	return &notificationHub{signal: make(chan struct{})}
+}
+
+func (n *notificationHub) wait() <-chan struct{} {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.signal
+}
+
+func (n *notificationHub) wakeAll() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	close(n.signal)
+	n.signal = make(chan struct{})
+}
 
 type getNotificationsResponse struct {
 	ID              string    `json:"id" db:"id"`
@@ -34,9 +60,11 @@ func getNotificationsHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := controller.Flush(); err != nil {
 			return nil
 		}
-		ticker := time.NewTicker(500 * time.Millisecond)
+		// 期間開始の合図ですぐ確認する。合図を取りこぼしても定期確認で拾う。
+		ticker := time.NewTicker(notificationPollInterval)
 		defer ticker.Stop()
 		for {
+			wake := h.NotificationWake.wait()
 			user, err := getUser(ctx, h.DB, userID)
 			if err != nil {
 				if !errors.Is(err, sql.ErrNoRows) && ctx.Err() == nil {
@@ -76,6 +104,7 @@ func getNotificationsHandler(h *HandlerContext) echo.HandlerFunc {
 			case <-ctx.Done():
 				return nil
 			case <-ticker.C:
+			case <-wake:
 			}
 		}
 	}

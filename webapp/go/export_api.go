@@ -38,6 +38,13 @@ func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 
+		batch := newSignatureBatch()
+		batch.addUser(author)
+		for _, post := range posts {
+			batch.add(author, post.ImageID)
+		}
+		batch.offload(ctx, h)
+
 		var body bytes.Buffer
 		writer := zip.NewWriter(&body)
 		defer writer.Close()

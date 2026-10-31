@@ -33,21 +33,37 @@ func imageSigningKey(secretKeyHash string) ([]byte, error) {
 	return key, nil
 }
 
-func imageSignature(key []byte, imageID string, exp int64) []byte {
-	cacheKey := strconv.FormatInt(exp, 10) + ":" + imageID + ":" + string(key)
+func imageSignatureCacheKey(key []byte, imageID string, exp int64) string {
+	return strconv.FormatInt(exp, 10) + ":" + imageID + ":" + string(key)
+}
+
+func imageSignatureCached(key []byte, imageID string, exp int64) bool {
+	cacheKey := imageSignatureCacheKey(key, imageID, exp)
 	imageSignatureCache.Lock()
-	cached, ok := imageSignatureCache.values[cacheKey]
+	defer imageSignatureCache.Unlock()
+	_, ok := imageSignatureCache.values[cacheKey]
+	return ok
+}
+
+func storeImageSignature(key []byte, imageID string, exp int64, signature []byte) {
+	cacheKey := imageSignatureCacheKey(key, imageID, exp)
+	imageSignatureCache.Lock()
+	defer imageSignatureCache.Unlock()
+	if len(imageSignatureCache.values) >= imageSignatureCacheLimit {
+		clear(imageSignatureCache.values)
+	}
+	imageSignatureCache.values[cacheKey] = signature
+}
+
+func imageSignature(key []byte, imageID string, exp int64) []byte {
+	imageSignatureCache.Lock()
+	cached, ok := imageSignatureCache.values[imageSignatureCacheKey(key, imageID, exp)]
 	imageSignatureCache.Unlock()
 	if ok {
 		return cached
 	}
 	signature := computeImageSignature(key, imageID, exp)
-	imageSignatureCache.Lock()
-	if len(imageSignatureCache.values) >= imageSignatureCacheLimit {
-		clear(imageSignatureCache.values)
-	}
-	imageSignatureCache.values[cacheKey] = signature
-	imageSignatureCache.Unlock()
+	storeImageSignature(key, imageID, exp, signature)
 	return signature
 }
 
@@ -62,9 +78,13 @@ func computeImageSignature(key []byte, imageID string, exp int64) []byte {
 	return value
 }
 
-func signedImageURL(user User, imageID string) string {
+func currentImageURLExpiry() int64 {
 	exp := time.Now().Add(imageURLLifetime).Unix()
-	exp -= exp % imageURLExpiryStep
+	return exp - exp%imageURLExpiryStep
+}
+
+func signedImageURL(user User, imageID string) string {
+	exp := currentImageURLExpiry()
 	query := url.Values{
 		"exp": {strconv.FormatInt(exp, 10)},
 		"sig": {base64.RawURLEncoding.EncodeToString(imageSignature(user.ImageKey, imageID, exp))},

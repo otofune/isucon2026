@@ -92,6 +92,13 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 				return scores[candidates[i].ID] > scores[candidates[j].ID]
 			})
 		}
+		// 返す範囲の先頭だけを先に署名する。
+		batch := newSignatureBatch()
+		for _, post := range candidates[:min(len(candidates), 51)] {
+			batch.add(post.Author, post.ImageID)
+			batch.addUser(post.Author)
+		}
+		batch.offload(ctx, h)
 		items := make([]feedItemResponse, 0)
 		for _, post := range candidates {
 			score := scores[post.ID]

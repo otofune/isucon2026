@@ -82,6 +82,12 @@ func openPostingWindowHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		// 通知の正本は DB にあるので、合図に失敗しても SSE の定期確認で届く。
+		if region == h.Config.Region {
+			h.NotificationWake.wakeAll()
+		} else if err := h.callPeer(ctx, region, "/_internal/notifications/wake", struct{}{}); err != nil {
+			c.Logger().Error("failed to wake notifications", "error", err)
+		}
 		return c.JSON(http.StatusCreated, openPostingWindowResponse{
 			ID: window.ID, Region: window.Region, LocalDate: window.LocalDate.Format(time.DateOnly),
 			StartsAt: window.StartsAt, OnTimeDeadline: window.OnTimeDeadline,

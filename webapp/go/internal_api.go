@@ -2,7 +2,9 @@ package isureal
 
 import (
 	"crypto/subtle"
+	"encoding/hex"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/labstack/echo/v5"
 )
@@ -36,10 +38,55 @@ func internalInvalidateSessionHandler(h *HandlerContext) echo.HandlerFunc {
 	}
 }
 
+func internalWakeNotificationsHandler(h *HandlerContext) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		h.NotificationWake.wakeAll()
+		return c.NoContent(http.StatusNoContent)
+	}
+}
+
 func internalResetHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		h.Sessions.clear()
 		h.Images.clear()
 		return c.NoContent(http.StatusNoContent)
+	}
+}
+
+func internalSignHandler() echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		var input signatureRequest
+		if err := c.Bind(&input); err != nil {
+			return err
+		}
+		signatures := make([][]byte, len(input.Items))
+		var next atomic.Int64
+		var failed atomic.Bool
+		done := make(chan struct{}, signatureWorkerConcurrency)
+		for range signatureWorkerConcurrency {
+			go func() {
+				defer func() { done <- struct{}{} }()
+				for {
+					i := int(next.Add(1)) - 1
+					if i >= len(input.Items) {
+						return
+					}
+					item := input.Items[i]
+					key, err := hex.DecodeString(item.Key)
+					if err != nil {
+						failed.Store(true)
+						return
+					}
+					signatures[i] = imageSignature(key, item.ImageID, item.Exp)
+				}
+			}()
+		}
+		for range signatureWorkerConcurrency {
+			<-done
+		}
+		if failed.Load() {
+			return echo.ErrBadRequest
+		}
+		return c.JSON(http.StatusOK, signatureResponse{Signatures: signatures})
 	}
 }
