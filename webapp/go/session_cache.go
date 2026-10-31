@@ -19,6 +19,8 @@ var regionPeers = map[string]string{
 	"asia":    "http://192.168.1.10:8080",
 	"europe":  "http://192.168.2.10:8080",
 	"america": "http://192.168.3.10:8080",
+	// 読み取りを分担する DB 台のアプリ。関係の無効化と初期化を受け取る。
+	"asia-db": "http://192.168.4.10:8080",
 }
 
 var peerClient = &http.Client{
