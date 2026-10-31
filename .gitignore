@@ -1,0 +1,47 @@
+# OS and editor metadata
+.DS_Store
+._*
+*~
+*.swp
+*.swo
+
+# Credentials and machine-specific environment
+.env
+.env.*
+!.env.example
+!.env.sample
+env.sh
+.ssh/
+*.pem
+*.key
+
+# Dependencies and caches (keep dependency manifests and lockfiles)
+node_modules/
+vendor/
+.venv/
+__pycache__/
+*.py[cod]
+.bundle/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+/webapp/perl/local/
+
+# Build products (the supplied webapp/public assets are tracked)
+/webapp/go/isureal
+/webapp/rust/isureal
+/webapp/rust/target/
+/webapp/nodejs/dist/
+*.test
+coverage/
+.coverage
+
+# Runtime files and database dumps
+*.log
+*.pid
+*.sock
+*.prof
+*.pprof
+*.dump
+*.sql.gz
+*.sql.zst
