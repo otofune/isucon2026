@@ -3,6 +3,7 @@ package isureal
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -133,21 +134,36 @@ func loadMemoryInteractions(ctx context.Context, db sqlx.QueryerContext, posts [
 		postIDs[i] = posts[i].ID
 	}
 
-	query, args, err := sqlx.In(`AND r.post_id IN (?) ORDER BY r.created_at DESC, r.id DESC`, postIDs)
-	if err != nil {
-		return interactions, err
+	// 海外では SQL が1往復かかるので、2つの一覧を並行して読む。
+	var reactions []RealMojiWithReactor
+	var comments []CommentWithAuthor
+	var reactionsErr, commentsErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		query, args, err := sqlx.In(`AND r.post_id IN (?) ORDER BY r.created_at DESC, r.id DESC`, postIDs)
+		if err != nil {
+			reactionsErr = err
+			return
+		}
+		reactions, reactionsErr = selectCurrentRealMojis(ctx, db, sqlx.Rebind(sqlx.DOLLAR, query), args...)
+	}()
+	go func() {
+		defer wg.Done()
+		query, args, err := sqlx.In(`AND c.post_id IN (?) ORDER BY c.created_at, c.id`, postIDs)
+		if err != nil {
+			commentsErr = err
+			return
+		}
+		comments, commentsErr = selectCommentsWithAuthor(ctx, db, sqlx.Rebind(sqlx.DOLLAR, query), args...)
+	}()
+	wg.Wait()
+	if reactionsErr != nil {
+		return interactions, reactionsErr
 	}
-	reactions, err := selectCurrentRealMojis(ctx, db, sqlx.Rebind(sqlx.DOLLAR, query), args...)
-	if err != nil {
-		return interactions, err
-	}
-	query, args, err = sqlx.In(`AND c.post_id IN (?) ORDER BY c.created_at, c.id`, postIDs)
-	if err != nil {
-		return interactions, err
-	}
-	comments, err := selectCommentsWithAuthor(ctx, db, sqlx.Rebind(sqlx.DOLLAR, query), args...)
-	if err != nil {
-		return interactions, err
+	if commentsErr != nil {
+		return interactions, commentsErr
 	}
 	// 1投稿につき50件までしか返さないので、署名の対象も先に絞る。
 	reactionCounts := map[string]int{}
