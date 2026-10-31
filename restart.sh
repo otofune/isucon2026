@@ -20,8 +20,14 @@ else
   sudo systemctl start postgresql@16-main.service
 fi
 
+# asia2 のアプリは JPEG 検証の内部 API 専用で、公開側のトラフィックは受けない。
+if [[ $instance == asia2 ]]; then
+  (cd webapp/go && go build -o isureal ./cmd/isureal)
+  rsync -a webapp/ /home/isucon/webapp/
+  sudo systemctl enable --quiet isureal-go.service
+  sudo systemctl restart isureal-go.service
 # 落ちている台にも反映できるよう、is-active ではなく is-enabled で判定する。
-if systemctl is-enabled --quiet isureal-go.service; then
+elif systemctl is-enabled --quiet isureal-go.service; then
   (cd webapp/go && go build -o isureal ./cmd/isureal)
   rsync -a webapp/ /home/isucon/webapp/
   sudo nginx -t

@@ -74,7 +74,7 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
-		width, height, err := validateJPEG(imageData)
+		width, height, err := h.validatePostJPEG(c.Request().Context(), imageData)
 		if err != nil || width > 4096 || height > 4096 {
 			return NewAPIError(http.StatusBadRequest, "invalid_post")
 		}

@@ -25,14 +25,10 @@ const (
 	tjFlagStopOnWarning = 8192
 )
 
-var errInvalidJPEG = errors.New("invalid jpeg")
-
 // cgo の呼び出しは GOMAXPROCS に数えられない。投稿が集中すると多数のスレッドが CPU を
 // 奪い合い、DB 接続を持つ goroutine まで止まるので、大きな画像の同時実行を制限する。
 // 1件にすると投稿の行列が長くなりすぎる。小さな画像はすぐ終わるので行列に並ばせない。
 var jpegValidationSlot = make(chan struct{}, 2)
-
-const jpegSlotThreshold = 128 * 1024
 
 // validateJPEG は破損を含めて JPEG 全体を検証し、寸法を返す。1/8 に縮小して展開すると、
 // 圧縮データはすべて復号して検査しつつ、逆 DCT と出力のコストを大きく減らせる。

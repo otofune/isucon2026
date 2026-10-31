@@ -3,6 +3,7 @@ package isureal
 import (
 	"crypto/subtle"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"sync/atomic"
 
@@ -64,6 +65,20 @@ func internalGetImageHandler() echo.HandlerFunc {
 			return echo.ErrNotFound
 		}
 		return c.Blob(http.StatusOK, "application/octet-stream", data)
+	}
+}
+
+func internalValidateJPEGHandler() echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		data, err := io.ReadAll(c.Request().Body)
+		if err != nil {
+			return err
+		}
+		width, height, err := validateJPEG(data)
+		if err != nil {
+			return c.NoContent(http.StatusUnprocessableEntity)
+		}
+		return c.JSON(http.StatusOK, jpegSize{Width: width, Height: height})
 	}
 }
 
