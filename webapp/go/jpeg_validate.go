@@ -27,12 +27,18 @@ const (
 
 var errInvalidJPEG = errors.New("invalid jpeg")
 
+// cgo の呼び出しは GOMAXPROCS に数えられない。投稿が集中すると多数のスレッドが CPU を
+// 奪い合い、DB 接続を持つ goroutine まで止まるので、同時に1件だけ検証する。
+var jpegValidationSlot = make(chan struct{}, 1)
+
 // validateJPEG は破損を含めて JPEG 全体を検証し、寸法を返す。1/8 に縮小して展開すると、
 // 圧縮データはすべて復号して検査しつつ、逆 DCT と出力のコストを大きく減らせる。
 func validateJPEG(data []byte) (width, height int, err error) {
 	if len(data) == 0 {
 		return 0, 0, errInvalidJPEG
 	}
+	jpegValidationSlot <- struct{}{}
+	defer func() { <-jpegValidationSlot }()
 	handle := C.tjInitDecompress()
 	if handle == nil {
 		return 0, 0, errors.New("failed to initialize turbojpeg")
