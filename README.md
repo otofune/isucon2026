@@ -44,7 +44,5 @@ git clone --config core.sshCommand="$(git -C /home/isucon/isucon2026 config core
   git@github.com:otofune/isucon2026.git
 ```
 
-アプリサーバーでは `./restart.sh` が `/home/isucon/webapp` へのコピー、必要なビルド、
-設定のコピーと `daemon-reload`、アプリ再起動、nginx の reload を行います。
-設定のみの反映は `./restart.sh --config-only`、対象台の PostgreSQL 設定を反映して再起動する場合は
-`./restart.sh --postgresql` を使います。詳しい反映手順は [AGENTS.md](AGENTS.md) を参照してください。
+`./restart.sh` はオプションなしで、その台の設定とアプリをすべて反映して再起動します。
+詳しい反映手順は [AGENTS.md](AGENTS.md) を参照してください。

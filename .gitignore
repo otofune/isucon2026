@@ -20,6 +20,9 @@ __pycache__/
 .ruff_cache/
 /webapp/perl/local/
 
+# Saved benchmark job pages
+/tools/bench-enqueue/data/
+
 # Build products (the supplied webapp/public assets are tracked)
 /webapp/go/isureal
 /webapp/rust/isureal
@@ -28,3 +31,6 @@ __pycache__/
 *.test
 coverage/
 .coverage
+
+# ベンチマークの生ログとモニタリング結果
+/artifacts/profiles/

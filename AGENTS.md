@@ -46,7 +46,8 @@ asia2	13.196.113.52	192.168.4.10
 ## ファイルの場所
 
 - `webapp/`: 各言語の実装、SQL、静的ファイル。
-- `restart.sh`: 実装・設定の反映処理。処理内容とオプションはファイルを確認する。
+- `restart.sh`: 実装・設定の反映処理。処理内容はファイルを確認する。
+- `tools/bench-enqueue/`: ポータルの Enqueue を API から押すサーバーと拡張。実行は `bench` Skill を使う。
 - `system/common/etc/systemd/system/`: アプリの systemd unit。
 - `system/common/etc/nginx/`: nginx 設定。
 - `system/<台名>/etc/postgresql/16/main/`: PostgreSQL 設定と認証ルール。
@@ -62,8 +63,10 @@ git pull --ff-only
 ./restart.sh
 ```
 
-設定のみの反映は `./restart.sh --config-only`、PostgreSQL の反映・再起動は対象台で `./restart.sh --postgresql` を使う。
-反映先と手順を変える場合は `restart.sh` も更新する。
+`restart.sh` にオプションはなく、その台の設定とアプリをすべて反映して再起動する。
+PostgreSQL は稼働中の台でのみ、アプリは `isureal-go.service` が enabled の台でのみ再起動する。
+共有DBの PostgreSQL を再起動すると、全リージョンのDB接続が一時的に切れる。
+対象言語は Go 固定。反映先や言語を変える場合は `restart.sh` も更新する。
 
 このリポジトリは大会用の非公開リポジトリ。`.env` や `env.sh` の接続情報は平文で管理する。
 設定ファイルを一律に除外せず、`.gitignore` は依存ライブラリ・キャッシュ・ビルド成果物などの再生成できるファイルを中心にする。
