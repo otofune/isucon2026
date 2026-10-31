@@ -129,7 +129,8 @@ func loginHandler(h *HandlerContext) echo.HandlerFunc {
 		if user.Status != "active" || user.SecretKeyHash != hex.EncodeToString(hash[:]) {
 			return NewAPIError(http.StatusUnauthorized, "invalid_credentials")
 		}
-		session, err := createLoginSessionTx(ctx, tx, user.ID)
+		// 上の FOR NO KEY UPDATE が同じ利用者の同時ログインを直列化している。
+		session, err := replaceLoginSessionTx(ctx, tx, user.ID)
 		if err != nil {
 			return err
 		}
