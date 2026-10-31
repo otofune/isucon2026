@@ -1,6 +1,8 @@
 package isureal
 
 import (
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 
 	"github.com/jmoiron/sqlx"
@@ -21,6 +23,9 @@ func NewServer(config *Config) *echo.Echo {
 	if !validRegion(config.Region) {
 		panic("invalid server region: " + config.Region)
 	}
+	// ループバック限定の計測用。
+	go http.ListenAndServe("127.0.0.1:6060", nil)
+
 	e := echo.New()
 	e.IPExtractor = extractClientIP
 
