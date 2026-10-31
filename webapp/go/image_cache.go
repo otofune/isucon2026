@@ -8,7 +8,7 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-const imageCacheMaxBytes = 768 << 20
+const imageCacheMaxBytes = 512 << 20
 
 // 各アプリ台の PostgreSQL には初期データの画像が入っている。不変なので読み取り専用の
 // ストアとして使い、地域間の転送と共有 DB のディスク読み込みを避ける。書き込みはしない。
