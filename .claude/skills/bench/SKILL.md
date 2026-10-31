@@ -1,6 +1,6 @@
 ---
 name: bench
-description: ISUCON2026 のポータルでベンチマーク（負荷走行）をエンキューし、完了まで待ってスコアを報告する。ユーザーが「ベンチを回して」「負荷走行して」「スコアを確認して」「エンキューして」と言ったとき、または依頼された改善の効果測定でベンチマークの実行が必要なときに使う。tools/bench-enqueue のローカルサーバーを経由し、ポータルの Enqueue はブラウザ拡張が押す。
+description: ISUCON2026 のポータルでベンチマーク（負荷走行）をエンキューし、完了まで待ってスコアを報告する。必要に応じて tools/profile で4台の計測も同時に行い、API・SQL・サーバー資源を集計する。ユーザーが「ベンチを回して」「負荷走行して」「スコアを確認して」「エンキューして」「プロファイルして」「ボトルネックを調べて」「計測して」「alp を見て」「スロークエリを調べて」と言ったとき、または依頼された改善の効果測定でベンチマークの実行が必要なときに使う。tools/bench-enqueue のローカルサーバーを経由し、ポータルの Enqueue はブラウザ拡張が押す。
 ---
 
 # bench
@@ -26,6 +26,32 @@ description: ISUCON2026 のポータルでベンチマーク（負荷走行）�
    ```sh
    curl -s http://127.0.0.1:8787/jobs/<ジョブID>/conclusion
    ```
+
+## 計測付きで実行する
+
+ボトルネックの調査や、改善前後の比較を求められたときは、手順2の `bench.py` の代わりに `tools/profile/run.py` を使う。スコアを見るだけなら `bench.py` で足りる。`run.py` は4台の計測を開始し、`bench.py` で1走行してからログを回収する。commit は自動で記録されるので、メモに書くのは内容だけでよい。
+
+```sh
+python3 tools/profile/run.py '内容のメモ'   # run_in_background で実行する
+```
+
+完了したら `Saved` の行に出る保存先を使って集計する。`summarize.py` の alp は `/tmp/isureal-profile-bin/` にあり、消えていたら `tools/profile/README.md` の手順で入れ直す。
+
+```sh
+run=artifacts/profiles/<取得時刻>
+curl -s http://127.0.0.1:8787/jobs/<ジョブID>/conclusion > $run/conclusion.txt
+python3 tools/profile/summarize.py $run
+```
+
+全体の集計には初期化や最終チェックも混ざるので、負荷テストの区間だけを見るときは `conclusion.txt` の最初と最後のログ時刻を渡す。区間指定の結果は `alp-window-*.md` と `summary-window.json` に出る。
+
+```sh
+python3 tools/profile/summarize.py $run --from-time 2026-10-31T06:45:00+00:00 --until-time 2026-10-31T06:46:00+00:00
+```
+
+結果を解釈する前に、`tools/profile/README.md` の「計測上の注意」を読む。SSE の待機時間や、nginx ログと採点件数の違いなど、読み違えやすい点がまとまっている。
+
+`run.py` の終了コードは `bench.py` と同じ。ただし準備中の SSH 失敗などでも 1 で終わるので、出力に `enqueue #` の行がなければベンチは要求されていない。エンキューに失敗しても計測は回収される。
 
 ## 終了コード
 
