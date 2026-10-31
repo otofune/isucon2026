@@ -1,7 +1,6 @@
 package isureal
 
 import (
-	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -11,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v5"
 )
@@ -110,27 +108,4 @@ func InvalidateLoginSession(db *sqlx.DB, userID string, tokenHash string) error 
 	}
 
 	return nil
-}
-
-// replaceLoginSessionTx は既存のセッションを無効化して新しいセッションを作る。
-// 同時ログインで無効化が漏れないよう、呼び出し側で先に users の行をロックする。
-func replaceLoginSessionTx(ctx context.Context, tx *sqlx.Tx, userID string) (*Session, error) {
-	randomToken := uuid.NewString()
-	tokenHashBytes := sha256.Sum256([]byte(randomToken))
-	tokenHash := hex.EncodeToString(tokenHashBytes[:])
-	var session Session
-	if err := tx.GetContext(ctx, &session, `
-  WITH replaced AS (
-    UPDATE login_sessions
-    SET active = false, invalidated_at = clock_timestamp(), reason = 'replaced'
-    WHERE user_id = $1 AND active = true
-  )
-  INSERT INTO login_sessions (id, user_id, token_hash)
-  VALUES ($2, $1, $3)
-  RETURNING user_id, token_hash, created_at
- `, userID, uuid.NewString(), tokenHash); err != nil {
-		return nil, fmt.Errorf("failed to replace session: %w", err)
-	}
-	session.Token = randomToken
-	return &session, nil
 }

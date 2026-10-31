@@ -112,35 +112,21 @@ func loginHandler(h *HandlerContext) echo.HandlerFunc {
 			return NewAPIError(http.StatusUnauthorized, "invalid_credentials")
 		}
 		ctx := c.Request().Context()
-		tx, err := h.DB.BeginTxx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
+		hash := sha256.Sum256([]byte(input.SecretKey))
+		token := uuid.NewString()
+		tokenHash := sha256.Sum256([]byte(token))
 		var user User
-		err = tx.GetContext(ctx, &user, `SELECT id, username, secret_key_hash, display_name, bio, profile_image_id, region, account_type, status FROM users WHERE username = $1 FOR NO KEY UPDATE`, input.Username)
+		err := h.DB.GetContext(ctx, &user, `SELECT * FROM isu_login($1, $2, $3, $4)`, input.Username, hex.EncodeToString(hash[:]), uuid.NewString(), hex.EncodeToString(tokenHash[:]))
 		if errors.Is(err, sql.ErrNoRows) {
 			return NewAPIError(http.StatusUnauthorized, "invalid_credentials")
 		}
 		if err != nil {
 			return err
 		}
-		hash := sha256.Sum256([]byte(input.SecretKey))
-		if user.Status != "active" || user.SecretKeyHash != hex.EncodeToString(hash[:]) {
-			return NewAPIError(http.StatusUnauthorized, "invalid_credentials")
-		}
-		// 上の FOR NO KEY UPDATE が同じ利用者の同時ログインを直列化している。
-		session, err := replaceLoginSessionTx(ctx, tx, user.ID)
-		if err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
 		if err := h.sessionChanged(ctx, user.ID, user.Region); err != nil {
 			return err
 		}
-		return c.JSON(http.StatusOK, loginResponse{Token: session.Token, User: newSessionUserResponse(user)})
+		return c.JSON(http.StatusOK, loginResponse{Token: token, User: newSessionUserResponse(user)})
 	}
 }
 

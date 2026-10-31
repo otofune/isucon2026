@@ -6,7 +6,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -82,78 +81,39 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 
 		ctx := c.Request().Context()
 		userID := GetSession(c).UserID
-		tx, err := h.DB.BeginTxx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		// 同じ利用者の重複投稿はこの行ロックで防ぐ。
-		var user User
-		if err := tx.GetContext(ctx, &user, `SELECT `+strings.Join(userColumns, ", ")+` FROM users WHERE id = $1 AND status = 'active' FOR NO KEY UPDATE`, userID); err != nil {
-			return err
-		}
-		if err := user.setImageKey(); err != nil {
-			return err
-		}
-		// 投稿同士は共有し、期間の切り替えとだけ競合させる。ロック待ちの間に切り替わると
-		// 0件になるので、新しい期間を読み直す。
-		var window struct {
-			ID             string    `db:"id"`
-			LocalDate      time.Time `db:"local_date"`
-			StartsAt       time.Time `db:"starts_at"`
-			OnTimeDeadline time.Time `db:"on_time_deadline"`
-			Active         int       `db:"active"`
-			Deleted        int       `db:"deleted"`
-		}
-		const currentWindowQuery = `
-   SELECT w.id, w.local_date, w.starts_at, w.on_time_deadline, counts.active, counts.deleted
-   FROM posting_windows w, LATERAL (
-     SELECT count(*) FILTER (WHERE p.deleted_at IS NULL) AS active,
-            count(*) FILTER (WHERE p.deleted_at IS NOT NULL) AS deleted
-     FROM posts p JOIN posting_windows posted ON posted.id = p.posting_window_id
-     WHERE p.author_id = $2 AND posted.local_date = w.local_date
-   ) counts
-   WHERE w.region = $1 AND w.ended_at IS NULL
-   FOR SHARE OF w
-  `
-		err = tx.GetContext(ctx, &window, currentWindowQuery, user.Region, userID)
-		if errors.Is(err, sql.ErrNoRows) {
-			err = tx.GetContext(ctx, &window, currentWindowQuery, user.Region, userID)
-		}
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return NewAPIError(http.StatusConflict, "post_slot_unavailable")
-			}
-			return err
-		}
-		postedAt := time.Now().UTC().Truncate(time.Microsecond)
-		if window.Active != 0 || window.Deleted >= 2 || postedAt.Before(window.StartsAt) {
-			return NewAPIError(http.StatusConflict, "post_slot_unavailable")
-		}
 		imageID := uuid.NewString()
 		postID := uuid.NewString()
+		// 投稿できなかったときは参照されないファイルが残るが、初期化で消える。
 		if err := writeImageFile(imageID, imageData); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `
-   WITH image AS (
-     INSERT INTO image_objects (id, owner_user_id, data, media_type, created_at, origin)
-     VALUES ($4, $2, '\x', 'image/jpeg', $11, $12)
-   )
-   INSERT INTO posts (id, author_id, posting_window_id, image_id, caption, visibility,
-                      location_kind, latitude, longitude, locality, posted_at)
-   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-  `, postID, userID, window.ID, imageID, input.Caption, input.Visibility,
-			location.Kind, location.Latitude, location.Longitude, location.Locality, postedAt, h.Config.Region); err != nil {
+		var created struct {
+			Result string `db:"result"`
+			User
+			WindowID       string     `db:"window_id"`
+			PostedAt       *time.Time `db:"posted_at"`
+			OnTimeDeadline *time.Time `db:"on_time_deadline"`
+		}
+		if err := h.DB.GetContext(ctx, &created, `SELECT * FROM isu_create_post($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			userID, postID, imageID, input.Caption, input.Visibility,
+			location.Kind, location.Latitude, location.Longitude, location.Locality, h.Config.Region); err != nil {
 			return err
 		}
-		if err := tx.Commit(); err != nil {
+		switch created.Result {
+		case "ok":
+		case "unavailable":
+			return NewAPIError(http.StatusConflict, "post_slot_unavailable")
+		default:
+			return sql.ErrNoRows
+		}
+		user := created.User
+		if err := user.setImageKey(); err != nil {
 			return err
 		}
 		post := Post{
-			ID: postID, AuthorID: userID, PostingWindowID: window.ID, ImageID: imageID,
+			ID: postID, AuthorID: userID, PostingWindowID: created.WindowID, ImageID: imageID,
 			Caption: input.Caption, Visibility: input.Visibility, PostLocation: location,
-			PostedAt: postedAt, OnTimeDeadline: window.OnTimeDeadline,
+			PostedAt: *created.PostedAt, OnTimeDeadline: *created.OnTimeDeadline,
 		}
 		return c.JSON(http.StatusCreated, newPostResponse(post, user))
 	}

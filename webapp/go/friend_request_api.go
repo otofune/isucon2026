@@ -1,14 +1,20 @@
 package isureal
 
 import (
-	"database/sql"
-	"errors"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v5"
 )
+
+// friendRequestResult は関係変更の関数の結果。ok 以外では ID などは空になる。
+type friendRequestResult struct {
+	Result    string     `db:"result"`
+	ID        string     `db:"id"`
+	Status    string     `db:"status"`
+	UpdatedAt *time.Time `db:"updated_at"`
+}
 
 type createFriendRequestRequest struct {
 	RecipientID string `json:"recipientId"`
@@ -28,52 +34,21 @@ func createFriendRequestHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		ctx := c.Request().Context()
 		actor := GetSession(c).UserID
-		tx, err := beginRelationshipTx(ctx, h.DB, actor, input.RecipientID)
-		if err != nil {
+		if actor == input.RecipientID || input.RecipientID == "" {
+			return NewAPIError(http.StatusBadRequest, "invalid_relationship")
+		}
+		var request friendRequestResult
+		if err := h.DB.GetContext(ctx, &request, `SELECT * FROM isu_create_friend_request($1, $2, $3, $4)`, actor, input.RecipientID, uuid.NewString(), uuid.NewString()); err != nil {
 			return err
 		}
-		defer tx.Rollback()
-		var state struct {
-			Blocked            bool    `db:"blocked"`
-			Friends            bool    `db:"friends"`
-			PendingID          *string `db:"pending_id"`
-			PendingRequesterID *string `db:"pending_requester_id"`
-		}
-		if err := tx.GetContext(ctx, &state, `
-   SELECT `+blockedBetweenQuery+` AS blocked,
-     EXISTS(SELECT 1 FROM friendships WHERE (user_low_id=$1 AND user_high_id=$2) OR (user_low_id=$2 AND user_high_id=$1)) AS friends,
-     pending.id AS pending_id, pending.requester_id AS pending_requester_id
-   FROM (SELECT 1) one LEFT JOIN LATERAL (
-     SELECT id, requester_id FROM friend_requests WHERE status='pending' AND
-      ((requester_id=$1 AND recipient_id=$2) OR (requester_id=$2 AND recipient_id=$1))
-     LIMIT 1
-   ) pending ON true
-  `, actor, input.RecipientID); err != nil {
-			return err
-		}
-		if state.Blocked || state.Friends {
+		switch request.Result {
+		case "ok":
+		case "not_found":
+			return NewAPIError(http.StatusNotFound, "relationship_not_found")
+		default:
 			return NewAPIError(http.StatusConflict, "relationship_conflict")
 		}
-		var request FriendRequest
-		if state.PendingID != nil {
-			if *state.PendingRequesterID == actor {
-				return NewAPIError(http.StatusConflict, "relationship_conflict")
-			}
-			if err := tx.GetContext(ctx, &request, `UPDATE friend_requests SET status='accepted', updated_at=clock_timestamp() WHERE id=$1 RETURNING `+friendRequestColumns, *state.PendingID); err != nil {
-				return err
-			}
-			if err := insertFriendship(ctx, tx, request); err != nil {
-				return err
-			}
-		} else {
-			if err := tx.GetContext(ctx, &request, `INSERT INTO friend_requests (id, requester_id, recipient_id, status, created_at, updated_at) VALUES ($1,$2,$3,'pending',clock_timestamp(),clock_timestamp()) RETURNING `+friendRequestColumns, uuid.NewString(), actor, input.RecipientID); err != nil {
-				return err
-			}
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		return c.JSON(http.StatusCreated, createFriendRequestResponse{RelationID: request.ID, Status: request.Status, UpdatedAt: request.UpdatedAt})
+		return c.JSON(http.StatusCreated, createFriendRequestResponse{RelationID: request.ID, Status: request.Status, UpdatedAt: *request.UpdatedAt})
 	}
 }
 
@@ -103,46 +78,19 @@ func transitionFriendRequestHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		ctx := c.Request().Context()
 		actor := GetSession(c).UserID
-		request, err := getFriendRequest(ctx, h.DB, input.RequestID)
-		if errors.Is(err, sql.ErrNoRows) {
+		var request friendRequestResult
+		if err := h.DB.GetContext(ctx, &request, `SELECT * FROM isu_transition_friend_request($1, $2, $3, $4)`, input.RequestID, actor, status, uuid.NewString()); err != nil {
+			return err
+		}
+		switch request.Result {
+		case "ok":
+		case "not_found":
 			return NewAPIError(http.StatusNotFound, "relationship_not_found")
-		}
-		if err != nil {
-			return err
-		}
-		if (status == "cancelled" && actor != request.RequesterID) || (status != "cancelled" && actor != request.RecipientID) {
+		case "conflict":
+			return NewAPIError(http.StatusConflict, "relationship_conflict")
+		default:
 			return NewAPIError(http.StatusForbidden, "relationship_action_forbidden")
 		}
-		tx, err := beginRelationshipTx(ctx, h.DB, request.RequesterID, request.RecipientID)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		var state struct {
-			FriendRequest
-			Blocked bool `db:"blocked"`
-		}
-		if err := tx.GetContext(ctx, &state, `SELECT `+friendRequestColumns+`, `+blockedBetweenQuery+` AS blocked FROM friend_requests WHERE id=$3`, request.RequesterID, request.RecipientID, input.RequestID); err != nil {
-			return err
-		}
-		request = state.FriendRequest
-		if request.Status != "pending" {
-			return NewAPIError(http.StatusForbidden, "relationship_action_forbidden")
-		}
-		if status == "accepted" {
-			if state.Blocked {
-				return NewAPIError(http.StatusConflict, "relationship_conflict")
-			}
-			if err := insertFriendship(ctx, tx, request); err != nil {
-				return err
-			}
-		}
-		if err := tx.GetContext(ctx, &request, `UPDATE friend_requests SET status=$2, updated_at=clock_timestamp() WHERE id=$1 RETURNING `+friendRequestColumns, request.ID, status); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		return c.JSON(http.StatusOK, transitionFriendRequestResponse{RelationID: request.ID, Status: request.Status, UpdatedAt: request.UpdatedAt})
+		return c.JSON(http.StatusOK, transitionFriendRequestResponse{RelationID: request.ID, Status: request.Status, UpdatedAt: *request.UpdatedAt})
 	}
 }
