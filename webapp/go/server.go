@@ -60,6 +60,7 @@ func NewServer(config *Config) *echo.Echo {
 
 	handlerContext := &HandlerContext{
 		DB:               db,
+		AdminDB:          adminDB,
 		Config:           config,
 		IPBans:           &IPBanList{},
 		Images:           newImageCache(localDB, config, imageCacheMaxBytes),
