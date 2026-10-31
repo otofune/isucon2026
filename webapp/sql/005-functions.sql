@@ -161,3 +161,134 @@ BEGIN
   RETURN QUERY UPDATE friend_requests r SET status = p_status, updated_at = clock_timestamp()
     WHERE r.id = request.id RETURNING 'ok'::text, r.id::text, r.status, r.updated_at;
 END $$;
+
+-- post.go の viewerContext.canView と comment.go の canComment と同じ判定。
+DROP FUNCTION IF EXISTS isu_interaction_state(text, text);
+CREATE FUNCTION isu_interaction_state(p_viewer text, p_post text)
+RETURNS TABLE (can_view boolean, can_comment boolean) LANGUAGE plpgsql AS $$
+#variable_conflict use_column
+DECLARE
+  v_author text;
+  v_visibility text;
+  v_ended boolean;
+  v_region text;
+  v_posted boolean;
+  v_friend boolean;
+  v_reachable boolean;
+  v_view boolean;
+BEGIN
+  SELECT p.author_id, p.visibility, w.ended_at IS NOT NULL INTO v_author, v_visibility, v_ended
+    FROM posts p
+    JOIN posting_windows w ON w.id = p.posting_window_id
+    JOIN users a ON a.id = p.author_id AND a.status = 'active'
+    WHERE p.id = p_post AND p.deleted_at IS NULL;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT false, false;
+    RETURN;
+  END IF;
+  SELECT u.region INTO v_region FROM users u WHERE u.id = p_viewer AND u.status = 'active';
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT false, false;
+    RETURN;
+  END IF;
+  v_posted := EXISTS(
+    SELECT 1 FROM posts p
+    JOIN posting_windows posted ON posted.id = p.posting_window_id
+    JOIN posting_windows current ON current.region = v_region AND current.ended_at IS NULL
+                                AND current.local_date = posted.local_date
+    WHERE p.author_id = p_viewer AND p.deleted_at IS NULL);
+  IF v_author = p_viewer THEN
+    RETURN QUERY SELECT true, (NOT v_ended) AND v_posted;
+    RETURN;
+  END IF;
+  IF v_ended OR NOT v_posted OR EXISTS(
+    SELECT 1 FROM block_relations b
+    WHERE (b.blocker_id = p_viewer AND b.blocked_id = v_author) OR (b.blocker_id = v_author AND b.blocked_id = p_viewer)) THEN
+    RETURN QUERY SELECT false, false;
+    RETURN;
+  END IF;
+  v_friend := EXISTS(SELECT 1 FROM friendships f
+    WHERE (f.user_low_id = p_viewer AND f.user_high_id = v_author) OR (f.user_low_id = v_author AND f.user_high_id = p_viewer));
+  v_reachable := EXISTS(
+    WITH viewer_friends AS (
+      SELECT f.user_high_id AS id FROM friendships f WHERE f.user_low_id = p_viewer
+      UNION ALL SELECT f.user_low_id FROM friendships f WHERE f.user_high_id = p_viewer
+    ), author_friends AS (
+      SELECT f.user_high_id AS id FROM friendships f WHERE f.user_low_id = v_author
+      UNION ALL SELECT f.user_low_id FROM friendships f WHERE f.user_high_id = v_author
+    )
+    SELECT 1 FROM viewer_friends JOIN author_friends ON author_friends.id = viewer_friends.id);
+  v_view := CASE v_visibility
+    WHEN 'public' THEN true
+    WHEN 'friends' THEN v_friend
+    WHEN 'friends_of_friends' THEN v_friend OR v_reachable
+    ELSE false END;
+  RETURN QUERY SELECT v_view, v_view AND (v_visibility = 'public' OR v_friend);
+END $$;
+
+DROP FUNCTION IF EXISTS isu_create_comment(text, text, text, text);
+CREATE FUNCTION isu_create_comment(p_actor text, p_post text, p_comment text, p_body text)
+RETURNS TABLE (
+  result text, created_at timestamptz, id text, username text, secret_key_hash text, display_name text, bio text,
+  profile_image_id text, region text, account_type text, status text
+) LANGUAGE plpgsql AS $$
+#variable_conflict use_column
+DECLARE
+  v_author text;
+  v_allowed boolean;
+  v_created timestamptz;
+  u users%ROWTYPE;
+BEGIN
+  SELECT p.author_id INTO v_author FROM posts p WHERE p.id = p_post AND p.deleted_at IS NULL;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'forbidden'::text, NULL::timestamptz, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text;
+    RETURN;
+  END IF;
+  PERFORM 1 FROM users x WHERE x.id IN (p_actor, v_author) ORDER BY x.id COLLATE "C" FOR NO KEY UPDATE;
+  SELECT s.can_comment INTO v_allowed FROM isu_interaction_state(p_actor, p_post) s;
+  IF NOT v_allowed THEN
+    RETURN QUERY SELECT 'forbidden'::text, NULL::timestamptz, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text;
+    RETURN;
+  END IF;
+  INSERT INTO comments (id, post_id, author_id, body, created_at) VALUES (p_comment, p_post, p_actor, p_body, clock_timestamp())
+    RETURNING comments.created_at INTO v_created;
+  SELECT * INTO u FROM users x WHERE x.id = p_actor;
+  RETURN QUERY SELECT 'ok'::text, v_created, u.id::text, u.username::text, u.secret_key_hash, u.display_name, u.bio, u.profile_image_id::text, u.region, u.account_type, u.status;
+END $$;
+
+DROP FUNCTION IF EXISTS isu_replace_realmoji(text, text, text, text, text, text);
+CREATE FUNCTION isu_replace_realmoji(p_actor text, p_post text, p_realmoji text, p_image text, p_reaction text, p_origin text)
+RETURNS TABLE (
+  result text, created_at timestamptz, id text, username text, secret_key_hash text, display_name text, bio text,
+  profile_image_id text, region text, account_type text, status text
+) LANGUAGE plpgsql AS $$
+#variable_conflict use_column
+DECLARE
+  v_author text;
+  v_allowed boolean;
+  v_created timestamptz;
+  u users%ROWTYPE;
+BEGIN
+  SELECT p.author_id INTO v_author FROM posts p WHERE p.id = p_post AND p.deleted_at IS NULL;
+  IF NOT FOUND OR v_author = p_actor THEN
+    RETURN QUERY SELECT 'forbidden'::text, NULL::timestamptz, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text;
+    RETURN;
+  END IF;
+  IF NOT isu_lock_pair(p_actor, v_author) THEN
+    RETURN QUERY SELECT 'not_found'::text, NULL::timestamptz, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text;
+    RETURN;
+  END IF;
+  SELECT s.can_view INTO v_allowed FROM isu_interaction_state(p_actor, p_post) s;
+  IF NOT v_allowed THEN
+    RETURN QUERY SELECT 'forbidden'::text, NULL::timestamptz, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text, ''::text;
+    RETURN;
+  END IF;
+  UPDATE realmojis r SET replaced_at = clock_timestamp()
+    WHERE r.post_id = p_post AND r.reactor_id = p_actor AND r.replaced_at IS NULL AND r.deleted_at IS NULL;
+  INSERT INTO image_objects (id, owner_user_id, data, media_type, origin) VALUES (p_image, p_actor, '\x', 'image/jpeg', p_origin);
+  INSERT INTO realmojis (id, post_id, reactor_id, image_id, reaction_type, created_at)
+    VALUES (p_realmoji, p_post, p_actor, p_image, p_reaction, clock_timestamp())
+    RETURNING realmojis.created_at INTO v_created;
+  SELECT * INTO u FROM users x WHERE x.id = p_actor;
+  RETURN QUERY SELECT 'ok'::text, v_created, u.id::text, u.username::text, u.secret_key_hash, u.display_name, u.bio, u.profile_image_id::text, u.region, u.account_type, u.status;
+END $$;

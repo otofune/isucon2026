@@ -71,3 +71,10 @@ func canComment(ctx context.Context, db sqlx.QueryerContext, viewerID, postID st
 	}
 	return viewer.Friends[post.AuthorID], nil
 }
+
+// interactionResult はコメントと RealMoji の関数の結果。ok 以外では利用者の列は空になる。
+type interactionResult struct {
+	Result    string     `db:"result"`
+	CreatedAt *time.Time `db:"created_at"`
+	User
+}
