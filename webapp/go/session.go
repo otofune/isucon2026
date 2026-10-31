@@ -61,7 +61,7 @@ func getSessionFromHeader(c *echo.Context, h *HandlerContext) (*Session, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
-	if session.Region == h.Config.Region && h.Config.SessionCache {
+	if session.Region == h.Config.Region {
 		h.Sessions.put(generation, &session)
 	}
 	return &session, nil
