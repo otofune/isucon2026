@@ -14,13 +14,24 @@ ssh isu2026-3 # america1
 ssh isu2026-4 # asia2
 ```
 
+もしくは
+
+```
+ssh isu2026-asia1
+ssh isu2026-europe1
+ssh isu2026-america1
+ssh isu2026-asia2
+```
+
 ### サーバーの IP アドレスについて
 
+```tsv
 name	Public IPv4	Private IPv4
 asia1	13.159.156.72	192.168.1.10
 europe1	54.248.98.5	192.168.2.10
 america1	16.76.105.190	192.168.3.10
 asia2	13.196.113.52	192.168.4.10
+```
 
 #### ルーターIP
 
