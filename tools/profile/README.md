@@ -43,4 +43,4 @@ python3 tools/profile/summarize.py artifacts/profiles/取得時刻
 
 設定は [nginx.conf](../../system/common/etc/nginx/nginx.conf) と [PostgreSQL 設定](../../system/asia2/etc/postgresql/16/main/conf.d/isucon.conf)。`pg_stat_statements` の初回有効化には PostgreSQL の再起動と `CREATE EXTENSION IF NOT EXISTS pg_stat_statements` が必要。
 
-生ログは `artifacts/profiles/` に保存し、Git 管理から除外する。結果の要約と改善の優先順位は `docs/` に残す。
+生ログは `artifacts/profiles/` に保存し、Git 管理から除外する。
