@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "ISUCON2026 Bench Enqueue",
+  "version": "1.0.0",
+  "description": "Reports the portal benchmark list and presses Enqueue for requests from the local server.",
+  "host_permissions": ["http://127.0.0.1:8787/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["https://portal.isucon.net/contestant/*"], "js": ["content.js"] }
+  ]
+}
