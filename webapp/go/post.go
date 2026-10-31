@@ -103,7 +103,14 @@ type viewerContext struct {
 }
 
 // 海外リージョンでは SQL 1回が1往復になるので、閲覧に必要な関係を1回の SQL で取得する。
-var viewerContextQuery = `
+var viewerQueryFull = strings.ReplaceAll(viewerQueryTemplate, "REACHABLE", `(
+      SELECT COALESCE(json_object_agg(id, connections), '{}')::text
+      FROM (SELECT id, count(*) AS connections FROM reachable GROUP BY id) counted
+    )`)
+
+var viewerQueryDirect = strings.ReplaceAll(viewerQueryTemplate, "REACHABLE", `'{}'::text`)
+
+var viewerQueryTemplate = `
   WITH friends AS (
     SELECT user_high_id AS id FROM friendships WHERE user_low_id = $1
     UNION ALL
@@ -126,15 +133,21 @@ var viewerContextQuery = `
       FROM block_relations WHERE blocker_id = $1 OR blocked_id = $1
     ) AS blocked,
     (SELECT COALESCE(json_agg(id), '[]')::text FROM friends) AS friends,
-    (
-      SELECT COALESCE(json_object_agg(id, connections), '{}')::text
-      FROM (SELECT id, count(*) AS connections FROM reachable GROUP BY id) counted
-    ) AS reachable
+    REACHABLE AS reachable
   FROM users u
   WHERE u.id = $1 AND u.status = 'active'
  `
 
 func loadViewerContext(ctx context.Context, db sqlx.QueryerContext, viewerID string) (viewerContext, error) {
+	return queryViewerContext(ctx, db, viewerQueryFull, viewerID)
+}
+
+// loadDirectViewerContext は友達の友達を必要としない処理のために2段目の展開を省く。
+func loadDirectViewerContext(ctx context.Context, db sqlx.QueryerContext, viewerID string) (viewerContext, error) {
+	return queryViewerContext(ctx, db, viewerQueryDirect, viewerID)
+}
+
+func queryViewerContext(ctx context.Context, db sqlx.QueryerContext, query, viewerID string) (viewerContext, error) {
 	viewer := viewerContext{Friends: map[string]bool{}, FriendsOfFriends: map[string]bool{}, MutualFriends: map[string]int{}}
 	var row struct {
 		User
@@ -143,7 +156,7 @@ func loadViewerContext(ctx context.Context, db sqlx.QueryerContext, viewerID str
 		Friends        string `db:"friends"`
 		Reachable      string `db:"reachable"`
 	}
-	if err := sqlx.GetContext(ctx, db, &row, viewerContextQuery, viewerID); err != nil {
+	if err := sqlx.GetContext(ctx, db, &row, query, viewerID); err != nil {
 		return viewer, err
 	}
 	if err := row.User.setImageKey(); err != nil {

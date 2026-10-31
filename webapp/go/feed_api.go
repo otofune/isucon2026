@@ -49,7 +49,12 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		defer func(start time.Time) { observe("feed.total", time.Since(start)) }(time.Now())
 		ctx := c.Request().Context()
-		viewer, err := loadViewerContext(ctx, h.DB, GetSession(c).UserID)
+		// 友達と公開のフィードの判定に友達の友達は使わない。
+		load := loadViewerContext
+		if input.Feed == "friends" || input.Feed == "public" {
+			load = loadDirectViewerContext
+		}
+		viewer, err := load(ctx, h.DB, GetSession(c).UserID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return c.JSON(http.StatusOK, getFeedResponse{Items: []feedItemResponse{}})
 		}
