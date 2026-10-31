@@ -1,6 +1,7 @@
 package isureal
 
 import (
+	"encoding/json"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -68,6 +69,10 @@ func NewServer(config *Config) *echo.Echo {
 		panic("failed to create image store: " + err.Error())
 	}
 	handlerContext.IPBans.start(db)
+	go handlerContext.NotificationWake.run(db)
+	http.HandleFunc("/debug/db", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(db.Stats())
+	})
 	e.Use(IPBanMiddleware(handlerContext))
 
 	e.POST("/_internal/sessions/invalidate", internalInvalidateSessionHandler(handlerContext), internalOnly(handlerContext))
