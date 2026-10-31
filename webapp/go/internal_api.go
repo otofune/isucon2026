@@ -49,7 +49,20 @@ func internalResetHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		h.Sessions.clear()
 		h.Images.clear()
+		if err := resetImageFiles(); err != nil {
+			return err
+		}
 		return c.NoContent(http.StatusNoContent)
+	}
+}
+
+func internalGetImageHandler() echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		data, err := readImageFile(c.Param("imageId"))
+		if err != nil {
+			return echo.ErrNotFound
+		}
+		return c.Blob(http.StatusOK, "application/octet-stream", data)
 	}
 }
 

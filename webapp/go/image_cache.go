@@ -20,23 +20,32 @@ type cachedImage struct {
 	SecretKeyHash string `db:"secret_key_hash"`
 	MediaType     string `db:"media_type"`
 	Data          []byte `db:"data"`
+	// 共有 DB のメタ情報だけが持つ。本体が DB にない画像の配信元リージョン。
+	Origin *string `db:"origin"`
 }
 
 type imageCache struct {
-	mu       sync.Mutex
-	local    *sqlx.DB
-	maxBytes int
-	bytes    int
-	entries  map[string]*list.Element
-	recent   *list.List
+	mu            sync.Mutex
+	local         *sqlx.DB
+	region        string
+	internalToken string
+	maxBytes      int
+	bytes         int
+	entries       map[string]*list.Element
+	recent        *list.List
 }
 
-func newImageCache(local *sqlx.DB, maxBytes int) *imageCache {
-	return &imageCache{local: local, maxBytes: maxBytes, entries: map[string]*list.Element{}, recent: list.New()}
+func newImageCache(local *sqlx.DB, config *Config, maxBytes int) *imageCache {
+	return &imageCache{local: local, region: config.Region, internalToken: config.DBPassword, maxBytes: maxBytes, entries: map[string]*list.Element{}, recent: list.New()}
 }
 
-const imageSelect = `
+const localImageSelect = `
    SELECT i.id, i.owner_user_id, u.secret_key_hash, i.media_type, i.data
+   FROM image_objects i JOIN users u ON u.id = i.owner_user_id
+  `
+
+const sharedImageSelect = `
+   SELECT i.id, i.owner_user_id, u.secret_key_hash, i.media_type, i.data, i.origin
    FROM image_objects i JOIN users u ON u.id = i.owner_user_id
   `
 
@@ -46,10 +55,13 @@ func (c *imageCache) load(ctx context.Context, db sqlx.QueryerContext, id string
 		return image, nil
 	}
 	image := &cachedImage{}
-	err := sqlx.GetContext(ctx, c.local, image, imageSelect+`WHERE i.id = $1`, id)
+	err := sqlx.GetContext(ctx, c.local, image, localImageSelect+`WHERE i.id = $1`, id)
 	if err != nil {
 		image = &cachedImage{}
-		if err := sqlx.GetContext(ctx, db, image, imageSelect+`WHERE i.id = $1`, id); err != nil {
+		if err := sqlx.GetContext(ctx, db, image, sharedImageSelect+`WHERE i.id = $1`, id); err != nil {
+			return nil, err
+		}
+		if err := c.fetchImageData(ctx, image); err != nil {
 			return nil, err
 		}
 	}
@@ -70,26 +82,29 @@ func (c *imageCache) loadMany(ctx context.Context, db sqlx.QueryerContext, ids [
 	if len(missing) == 0 {
 		return images, nil
 	}
-	missing = c.selectInto(ctx, c.local, images, missing)
+	missing = c.selectLocal(ctx, images, missing)
 	if len(missing) == 0 {
 		return images, nil
 	}
 	var loaded []*cachedImage
-	if err := sqlx.SelectContext(ctx, db, &loaded, imageSelect+`WHERE i.id = ANY($1::varchar[])`, missing); err != nil {
+	if err := sqlx.SelectContext(ctx, db, &loaded, sharedImageSelect+`WHERE i.id = ANY($1::varchar[])`, missing); err != nil {
 		return nil, err
 	}
 	for _, image := range loaded {
+		if err := c.fetchImageData(ctx, image); err != nil {
+			return nil, err
+		}
 		images[image.ID] = image
 		c.put(image)
 	}
 	return images, nil
 }
 
-// selectInto はローカルにある画像を images に入れ、見つからなかった ID を返す。
+// selectLocal はローカルにある画像を images に入れ、見つからなかった ID を返す。
 // ローカルの DB が使えないときは共有 DB に任せる。
-func (c *imageCache) selectInto(ctx context.Context, db sqlx.QueryerContext, images map[string]*cachedImage, ids []string) []string {
+func (c *imageCache) selectLocal(ctx context.Context, images map[string]*cachedImage, ids []string) []string {
 	var loaded []*cachedImage
-	if err := sqlx.SelectContext(ctx, db, &loaded, imageSelect+`WHERE i.id = ANY($1::varchar[])`, ids); err != nil {
+	if err := sqlx.SelectContext(ctx, c.local, &loaded, localImageSelect+`WHERE i.id = ANY($1::varchar[])`, ids); err != nil {
 		return ids
 	}
 	for _, image := range loaded {

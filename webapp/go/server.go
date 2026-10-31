@@ -58,15 +58,19 @@ func NewServer(config *Config) *echo.Echo {
 		DB:               db,
 		Config:           config,
 		IPBans:           &IPBanList{},
-		Images:           newImageCache(localDB, imageCacheMaxBytes),
+		Images:           newImageCache(localDB, config, imageCacheMaxBytes),
 		Sessions:         newSessionCache(),
 		NotificationWake: newNotificationHub(),
+	}
+	if err := os.MkdirAll(imageStoreDirectory, 0o755); err != nil {
+		panic("failed to create image store: " + err.Error())
 	}
 	handlerContext.IPBans.start(db)
 	e.Use(IPBanMiddleware(handlerContext))
 
 	e.POST("/_internal/sessions/invalidate", internalInvalidateSessionHandler(handlerContext), internalOnly(handlerContext))
 	e.POST("/_internal/notifications/wake", internalWakeNotificationsHandler(handlerContext), internalOnly(handlerContext))
+	e.GET("/_internal/images/:imageId", internalGetImageHandler(), internalOnly(handlerContext))
 	e.POST("/_internal/sign", internalSignHandler(), internalOnly(handlerContext))
 	e.POST("/_internal/reset", internalResetHandler(handlerContext), internalOnly(handlerContext))
 	e.POST("/api/initialize", initializeHandler(handlerContext))

@@ -132,16 +132,19 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		imageID := uuid.NewString()
 		postID := uuid.NewString()
+		if err := writeImageFile(imageID, imageData); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `
    WITH image AS (
-     INSERT INTO image_objects (id, owner_user_id, data, media_type, created_at)
-     VALUES ($4, $2, $12, 'image/jpeg', $11)
+     INSERT INTO image_objects (id, owner_user_id, data, media_type, created_at, origin)
+     VALUES ($4, $2, '\x', 'image/jpeg', $11, $12)
    )
    INSERT INTO posts (id, author_id, posting_window_id, image_id, caption, visibility,
                       location_kind, latitude, longitude, locality, posted_at)
    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
   `, postID, userID, window.ID, imageID, input.Caption, input.Visibility,
-			location.Kind, location.Latitude, location.Longitude, location.Locality, postedAt, imageData); err != nil {
+			location.Kind, location.Latitude, location.Longitude, location.Locality, postedAt, h.Config.Region); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {

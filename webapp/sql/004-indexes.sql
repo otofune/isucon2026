@@ -17,3 +17,6 @@ CREATE INDEX IF NOT EXISTS friend_requests_pending_recipient ON friend_requests(
 
 -- 認証
 CREATE INDEX IF NOT EXISTS login_sessions_token_hash_active ON login_sessions(token_hash) WHERE active;
+
+-- 新しい画像の本体を置いたリージョン。NULL なら本体は DB にある。
+ALTER TABLE image_objects ADD COLUMN IF NOT EXISTS origin text;

@@ -25,6 +25,9 @@ func initializeHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		h.Images.clear()
 		h.Sessions.clear()
+		if err := resetImageFiles(); err != nil {
+			return err
+		}
 		if err := h.resetPeers(c.Request().Context()); err != nil {
 			return err
 		}
