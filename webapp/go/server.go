@@ -42,13 +42,9 @@ func NewServer(config *Config) *echo.Echo {
 		panic("failed to open database: " + err.Error())
 	}
 	// 既定の待機接続2本では接続を張り直し続け、海外リージョンでは1回ごとに数RTTかかる。
-	// 利用者の大半は asia にいる。guard と初期化の分を残して max_connections 100 に収める。
-	connections := 20
-	if config.Region == "asia" {
-		connections = 50
-	}
-	db.SetMaxOpenConns(connections)
-	db.SetMaxIdleConns(connections)
+	// asia を増やしても DB の CPU で頭打ちになり、海外を減らすと往復の分だけ詰まる。
+	db.SetMaxOpenConns(30)
+	db.SetMaxIdleConns(30)
 	err = db.Ping()
 	if err != nil {
 		panic("failed to ping database: " + err.Error())
