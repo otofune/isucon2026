@@ -71,7 +71,7 @@ func NewServer(config *Config) *echo.Echo {
 		AdminDB:          adminDB,
 		Config:           config,
 		IPBans:           &IPBanList{},
-		Images:           newImageCache(localDB, config, imageCacheMaxBytes),
+		Images:           newImageCache(localDB, config, config.ImageCacheMB<<20),
 		Sessions:         newSessionCache(),
 		NotificationWake: newNotificationHub(),
 		Directory:        &directoryCache{},

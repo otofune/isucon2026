@@ -19,6 +19,7 @@ type Config struct {
 	// DB 台のアプリはセッションを変更しないので、無効化を受け取れずキャッシュできない。
 	SessionCache  bool
 	DBConnections int
+	ImageCacheMB  int
 }
 
 func ConfigFromEnv() *Config {
@@ -33,6 +34,7 @@ func ConfigFromEnv() *Config {
 		JPEGWorker:    envOrDefault("ISUREAL_JPEG_WORKER", "off") == "on",
 		SessionCache:  envOrDefault("ISUREAL_SESSION_CACHE", "on") == "on",
 		DBConnections: envInt("ISUREAL_DB_CONNECTIONS", 25),
+		ImageCacheMB:  envInt("ISUREAL_IMAGE_CACHE_MB", 512),
 	}
 }
 
