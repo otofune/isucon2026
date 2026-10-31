@@ -14,6 +14,7 @@ type HandlerContext struct {
 	DB     *sqlx.DB
 	Config *Config
 	IPBans *IPBanList
+	Images *imageCache
 }
 
 func NewServer(config *Config) *echo.Echo {
@@ -31,7 +32,9 @@ func NewServer(config *Config) *echo.Echo {
 	if err != nil {
 		panic("failed to open database: " + err.Error())
 	}
+	// 既定の待機接続2本では接続を張り直し続け、海外リージョンでは1回ごとに数RTTかかる。
 	db.SetMaxOpenConns(30)
+	db.SetMaxIdleConns(30)
 	err = db.Ping()
 	if err != nil {
 		panic("failed to ping database: " + err.Error())
@@ -41,6 +44,7 @@ func NewServer(config *Config) *echo.Echo {
 		DB:     db,
 		Config: config,
 		IPBans: &IPBanList{},
+		Images: newImageCache(imageCacheMaxBytes),
 	}
 	e.Use(IPBanMiddleware(handlerContext))
 
