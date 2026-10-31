@@ -41,6 +41,8 @@ INSERT INTO block_relations (id, blocker_id, blocked_id, created_at)
 SELECT id, blocker_id, blocked_id, created_at FROM initial_block_relations;
 
 -- session_replication_role = replica ではトリガーが動かないので、ここで版を上げる。
+-- 変更履歴に欠番ができるので、各台は全件を読み直す。
+TRUNCATE users_changes;
 UPDATE users_version SET version = version + 1 WHERE id = 1;
 
 COMMIT;

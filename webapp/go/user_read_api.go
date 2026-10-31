@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,8 @@ type directoryCache struct {
 	pending *directoryRefresh
 	running bool
 }
+
+const directoryChangeLimit = 2000
 
 type directoryRefresh struct {
 	done      chan struct{}
@@ -116,6 +119,11 @@ func (d *directoryCache) run(db *sqlx.DB) {
 func fetchDirectory(db *sqlx.DB, previous *userDirectory) (*userDirectory, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if previous != nil {
+		if directory := fetchDirectoryChanges(ctx, db, previous); directory != nil {
+			return directory, nil
+		}
+	}
 	var rows []struct {
 		directoryEntry
 		Version string `db:"version"`
@@ -138,6 +146,69 @@ func fetchDirectory(db *sqlx.DB, previous *userDirectory) (*userDirectory, error
 		directory.positions[entry.Username+"\x00"+entry.ID] = i
 	}
 	return directory, nil
+}
+
+// fetchDirectoryChanges は前回の版より後の変更だけを読む。履歴に欠番があるときや
+// 変更が多いときは nil を返し、呼び出し側が全件を読み直す。
+func fetchDirectoryChanges(ctx context.Context, db *sqlx.DB, previous *userDirectory) *userDirectory {
+	previousVersion, err := strconv.ParseInt(previous.version, 10, 64)
+	if err != nil {
+		return nil
+	}
+	var rows []struct {
+		Version int64  `db:"version"`
+		Current int64  `db:"current_version"`
+		ID      string `db:"id"`
+		Name    string `db:"username"`
+		Display string `db:"display_name"`
+		Status  string `db:"status"`
+	}
+	if err := db.SelectContext(ctx, &rows, `
+   SELECT c.version, (SELECT version FROM users_version WHERE id = 1) AS current_version, c.user_id AS id,
+          COALESCE(u.username, '') AS username, COALESCE(u.display_name, '') AS display_name,
+          COALESCE(u.status, 'deleted') AS status
+   FROM users_changes c LEFT JOIN users u ON u.id = c.user_id
+   WHERE c.version > $1 ORDER BY c.version
+  `, previousVersion); err != nil || len(rows) == 0 || len(rows) > directoryChangeLimit {
+		return nil
+	}
+	changed := make(map[string]int, len(rows))
+	for i, row := range rows {
+		if row.Version != previousVersion+int64(i)+1 {
+			return nil
+		}
+		changed[row.ID] = i
+	}
+	if rows[len(rows)-1].Version != rows[0].Current {
+		return nil
+	}
+	entries := make([]directoryEntry, 0, len(previous.entries)+len(rows))
+	for _, entry := range previous.entries {
+		if _, ok := changed[entry.ID]; !ok {
+			entries = append(entries, entry)
+		}
+	}
+	for _, i := range changed {
+		if rows[i].Status != "active" {
+			continue
+		}
+		entries = append(entries, directoryEntry{
+			ID: rows[i].ID, Username: rows[i].Name, DisplayName: rows[i].Display,
+			searchUsername: normalizeSearchText(rows[i].Name), searchDisplayName: normalizeSearchText(rows[i].Display),
+		})
+	}
+	// DB の照合順序は C.UTF-8 で、利用者名と ID は ASCII なのでバイト順と一致する。
+	slices.SortFunc(entries, func(a, b directoryEntry) int {
+		if order := strings.Compare(a.Username, b.Username); order != 0 {
+			return order
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	directory := &userDirectory{version: strconv.FormatInt(rows[0].Current, 10), entries: entries, positions: make(map[string]int, len(entries))}
+	for i := range entries {
+		directory.positions[entries[i].Username+"\x00"+entries[i].ID] = i
+	}
+	return directory
 }
 
 func positionOf(directory *userDirectory, entry directoryEntry) (int, bool) {

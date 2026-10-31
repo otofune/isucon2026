@@ -297,15 +297,22 @@ END $$;
 CREATE TABLE IF NOT EXISTS users_version (id int PRIMARY KEY, version bigint NOT NULL);
 INSERT INTO users_version (id, version) VALUES (1, 1) ON CONFLICT (id) DO NOTHING;
 
+-- 版の行ロックがコミット順を決めるので、版番号の順に変更を読めば取りこぼさない。
+CREATE TABLE IF NOT EXISTS users_changes (version bigint PRIMARY KEY, user_id varchar(36) NOT NULL);
+
 DROP TRIGGER IF EXISTS users_version_bump ON users;
 DROP FUNCTION IF EXISTS isu_bump_users_version();
 CREATE FUNCTION isu_bump_users_version() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  v_version bigint;
 BEGIN
-  UPDATE users_version SET version = version + 1 WHERE id = 1;
+  UPDATE users_version SET version = version + 1 WHERE id = 1 RETURNING version INTO v_version;
+  INSERT INTO users_changes (version, user_id)
+    VALUES (v_version, CASE TG_OP WHEN 'DELETE' THEN OLD.id ELSE NEW.id END);
   RETURN NULL;
 END $$;
 CREATE TRIGGER users_version_bump AFTER INSERT OR DELETE OR UPDATE OF username, display_name, status ON users
-  FOR EACH STATEMENT EXECUTE FUNCTION isu_bump_users_version();
+  FOR EACH ROW EXECUTE FUNCTION isu_bump_users_version();
 
 -- 通知は接続後に作られたものしか SSE で返さないので、有効なセッションを持たない
 -- 利用者の通知は読まれない。対象を絞って期間開始を短くする。
