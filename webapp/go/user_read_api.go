@@ -1,6 +1,7 @@
 package isureal
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -29,28 +30,50 @@ func normalizeSearchText(value string) string {
 	return norm.NFC.String(cases.Fold().String(norm.NFC.String(value)))
 }
 
-const searchTextCacheLimit = 200_000
+type directoryEntry struct {
+	ID                string `db:"id"`
+	Username          string `db:"username"`
+	DisplayName       string `db:"display_name"`
+	searchUsername    string
+	searchDisplayName string
+}
 
-var searchTextCache = struct {
-	sync.RWMutex
-	values map[string]string
-}{values: map[string]string{}}
+type userDirectory struct {
+	version   string
+	entries   []directoryEntry
+	positions map[string]int
+}
 
-func cachedSearchText(value string) string {
-	searchTextCache.RLock()
-	normalized, ok := searchTextCache.values[value]
-	searchTextCache.RUnlock()
-	if ok {
-		return normalized
+// directoryCache は検索用の一覧を持つ。版は内容のハッシュを毎回 DB で計算するので、
+// 書き込みの直後でも古い一覧は使わない。
+type directoryCache struct {
+	mu      sync.Mutex
+	current *userDirectory
+}
+
+func (d *directoryCache) load(ctx context.Context, db *sqlx.DB) (*userDirectory, error) {
+	var version string
+	if err := db.GetContext(ctx, &version, `SELECT count(*)::text || ':' || COALESCE(sum(hashtextextended(id || ':' || username || ':' || display_name, 0)::numeric), 0)::text FROM users WHERE status='active'`); err != nil {
+		return nil, err
 	}
-	normalized = normalizeSearchText(value)
-	searchTextCache.Lock()
-	if len(searchTextCache.values) >= searchTextCacheLimit {
-		clear(searchTextCache.values)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.current != nil && d.current.version == version {
+		return d.current, nil
 	}
-	searchTextCache.values[value] = normalized
-	searchTextCache.Unlock()
-	return normalized
+	var entries []directoryEntry
+	// 順序は DB の照合順序に従う。版は一覧を読む前の値なので、読む間の更新は次回に反映される。
+	if err := db.SelectContext(ctx, &entries, `SELECT id, username, display_name FROM users WHERE status='active' ORDER BY username, id`); err != nil {
+		return nil, err
+	}
+	positions := make(map[string]int, len(entries))
+	for i := range entries {
+		entries[i].searchUsername = normalizeSearchText(entries[i].Username)
+		entries[i].searchDisplayName = normalizeSearchText(entries[i].DisplayName)
+		positions[entries[i].Username+"\x00"+entries[i].ID] = i
+	}
+	d.current = &userDirectory{version: version, entries: entries, positions: positions}
+	return d.current, nil
 }
 
 func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
@@ -67,14 +90,23 @@ func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		ctx := c.Request().Context()
 		viewer := GetSession(c).UserID
-		// 判定に必要な列だけ全件取得し、該当した利用者だけ詳細を読む。
-		var candidates []struct {
-			ID          string `db:"id"`
-			Username    string `db:"username"`
-			DisplayName string `db:"display_name"`
-		}
-		if err := h.DB.SelectContext(ctx, &candidates, `SELECT id, username, display_name FROM users WHERE status='active' AND id<>$1 AND ($2='' OR (username,id)>($2,$3)) ORDER BY username, id`, viewer, input.BeforeUsername, input.BeforeID); err != nil {
+		// 判定に必要な列の一覧は、利用者表が変わっていなければ前回のものを使う。
+		directory, err := h.Directory.load(ctx, h.DB)
+		if err != nil {
 			return err
+		}
+		start := 0
+		if input.BeforeUsername != "" {
+			index, ok := directory.positions[input.BeforeUsername+"\x00"+input.BeforeID]
+			if !ok {
+				// 基準の利用者が一覧にないときは位置を決められないので DB で順序を判定する。
+				var after int
+				if err := h.DB.GetContext(ctx, &after, `SELECT count(*) FROM users WHERE status='active' AND (username,id)<=($1,$2)`, input.BeforeUsername, input.BeforeID); err != nil {
+					return err
+				}
+				index = after - 1
+			}
+			start = min(index+1, len(directory.entries))
 		}
 		blocked, err := getBlockedUserIDs(ctx, h.DB, viewer)
 		if err != nil {
@@ -82,8 +114,11 @@ func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		query := normalizeSearchText(input.Q)
 		matchedIDs := make([]string, 0, 51)
-		for _, user := range candidates {
-			if !strings.Contains(cachedSearchText(user.Username), query) && !strings.Contains(cachedSearchText(user.DisplayName), query) {
+		for _, user := range directory.entries[start:] {
+			if user.ID == viewer {
+				continue
+			}
+			if !strings.Contains(user.searchUsername, query) && !strings.Contains(user.searchDisplayName, query) {
 				continue
 			}
 			if blocked[user.ID] {

@@ -66,6 +66,13 @@ func internalGetImageHandler() echo.HandlerFunc {
 	}
 }
 
+func internalGetSignatureTableHandler() echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		http.ServeFile(c.Response(), c.Request(), signatureTablePath(currentImageURLExpiry()))
+		return nil
+	}
+}
+
 func internalSignHandler() echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		var input signatureRequest

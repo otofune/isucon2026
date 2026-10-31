@@ -16,8 +16,10 @@ const imageURLLifetime = 24 * time.Hour
 const imageSignatureIterations = 1000
 
 // 署名は1件で HMAC を1000回計算するので、同じ画像の URL が同じになるよう期限を
-// この単位で切り捨て、結果を再利用する。
-const imageURLExpiryStep = 10 * 60
+// この単位で切り上げ、結果を再利用する。初期画像は期限ごとに事前計算できる。
+// 2026-12-01T00:00:00Z を基準にする。
+const imageURLExpiryStep = 30 * 24 * 60 * 60
+const imageURLExpiryBase = 1796083200
 const imageSignatureCacheLimit = 500_000
 
 var imageSignatureCache = struct {
@@ -38,6 +40,9 @@ func imageSignatureCacheKey(key []byte, imageID string, exp int64) string {
 }
 
 func imageSignatureCached(key []byte, imageID string, exp int64) bool {
+	if lookupPrecomputedSignature(imageID, exp) != nil {
+		return true
+	}
 	cacheKey := imageSignatureCacheKey(key, imageID, exp)
 	imageSignatureCache.Lock()
 	defer imageSignatureCache.Unlock()
@@ -56,6 +61,9 @@ func storeImageSignature(key []byte, imageID string, exp int64, signature []byte
 }
 
 func imageSignature(key []byte, imageID string, exp int64) []byte {
+	if signature := lookupPrecomputedSignature(imageID, exp); signature != nil {
+		return signature
+	}
 	imageSignatureCache.Lock()
 	cached, ok := imageSignatureCache.values[imageSignatureCacheKey(key, imageID, exp)]
 	imageSignatureCache.Unlock()
@@ -79,8 +87,9 @@ func computeImageSignature(key []byte, imageID string, exp int64) []byte {
 }
 
 func currentImageURLExpiry() int64 {
-	exp := time.Now().Add(imageURLLifetime).Unix()
-	return exp - exp%imageURLExpiryStep
+	minimum := time.Now().Add(imageURLLifetime).Unix()
+	steps := (minimum - imageURLExpiryBase + imageURLExpiryStep - 1) / imageURLExpiryStep
+	return imageURLExpiryBase + max(steps, 0)*imageURLExpiryStep
 }
 
 func signedImageURL(user User, imageID string) string {
