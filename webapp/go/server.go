@@ -58,6 +58,14 @@ func NewServer(config *Config) *echo.Echo {
 	localDB.SetMaxOpenConns(16)
 	localDB.SetMaxIdleConns(16)
 
+	// 期間開始の遅れは最終日の時間を直接削るので、一般の接続待ちに並ばせない。
+	adminDB, err := sqlx.Open("pgx", config.DatabaseDSN())
+	if err != nil {
+		panic("failed to open admin database: " + err.Error())
+	}
+	adminDB.SetMaxOpenConns(2)
+	adminDB.SetMaxIdleConns(2)
+
 	handlerContext := &HandlerContext{
 		DB:               db,
 		AdminDB:          adminDB,
