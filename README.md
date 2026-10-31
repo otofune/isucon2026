@@ -29,6 +29,7 @@ DB の実データ、インスタンス固有の `/home/isucon/env.sh`、デプ�
 ssh isu2026-1  # asia1。2: europe1、3: america1、4: asia2
 cd /home/isucon/isucon2026
 git pull --ff-only
+./restart.sh
 ```
 
 Git の接続先は `git@github.com:otofune/isucon2026.git`、ブランチは `master` です。
@@ -41,5 +42,7 @@ git clone --config core.sshCommand="$(git -C /home/isucon/isucon2026 config core
   git@github.com:otofune/isucon2026.git
 ```
 
-稼働中のアプリケーションは引き続き `/home/isucon/webapp` を使用します。
-この作業コピーでの `git pull` 後、稼働中のアプリケーションへの反映は別途必要です。
+アプリサーバーでは `./restart.sh` が `/home/isucon/webapp` へのコピー、必要なビルド、
+設定のコピーと `daemon-reload`、アプリ再起動、nginx の reload を行います。
+設定のみの反映は `./restart.sh --config-only`、asia2 のDB設定を反映して再起動する場合は
+`./restart.sh --postgresql` を使います。詳しい反映手順は [AGENTS.md](AGENTS.md) を参照してください。
