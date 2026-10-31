@@ -251,9 +251,13 @@ func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
 			}
 			start = min(index+1, len(directory.entries))
 		}
-		blocked, err := getBlockedUserIDs(ctx, h.DB, viewer)
+		viewerRelations, err := relations.load(ctx, h.DB, []string{viewer})
 		if err != nil {
 			return err
+		}
+		blocked := make(map[string]bool, len(viewerRelations[viewer].blocked))
+		for _, id := range viewerRelations[viewer].blocked {
+			blocked[id] = true
 		}
 		query := normalizeSearchText(input.Q)
 		matchedIDs := make([]string, 0, 51)
