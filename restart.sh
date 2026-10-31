@@ -62,6 +62,36 @@ cleanup() {
 }
 trap cleanup EXIT
 
+instance=$(awk -v host="$(hostname -s)" '$1 == host {print $2}' "$repo_root/system/hosts.tsv")
+case "$instance" in
+  asia1|asia2) expected_region=asia ;;
+  europe1) expected_region=europe ;;
+  america1) expected_region=america ;;
+  *) echo 'Unknown instance; check system/hosts.tsv.' >&2; exit 1 ;;
+esac
+env_source="$repo_root/system/$instance/home/isucon/env.sh"
+bash -n "$env_source"
+python3 - "$env_source" "$expected_region" <<'PY'
+import re
+import shlex
+import sys
+from pathlib import Path
+
+values = {}
+for line in Path(sys.argv[1]).read_text().splitlines():
+    if not line.strip() or line.lstrip().startswith('#'):
+        continue
+    key, separator, value = line.partition('=')
+    if not separator or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
+        raise SystemExit('env.sh must contain KEY=value assignments (no export).')
+    words = shlex.split(value)
+    if len(words) > 1:
+        raise SystemExit('Quote values containing whitespace in env.sh.')
+    values[key] = words[0] if words else ''
+if values.get('ISUREAL_REGION') != sys.argv[2]:
+    raise SystemExit('ISUREAL_REGION must match the fixed region of this instance.')
+PY
+
 # Build before replacing the running binary. install below uses an atomic rename.
 case "$language" in
   go) (cd "$repo_root/webapp/go" && go build -o "$build_dir/isureal" ./cmd/isureal) ;;
@@ -79,6 +109,7 @@ copy_config() {
   sudo cp --archive --parents "$destination" "$backup_dir/"
   sudo install -o "$owner" -g "$group" -m "$mode" "$source" "$destination"
 }
+copy_config "$env_source" /home/isucon/env.sh isucon isucon
 for candidate in go nodejs perl php python ruby rust; do
   path="etc/systemd/system/isureal-$candidate.service"
   copy_config "$repo_root/system/common/$path" "/$path"
@@ -123,7 +154,7 @@ fi
 # Protect instance-installed dependencies, binaries and runtime files from --delete.
 rsync --archive --checksum --delete \
   --exclude=node_modules/ --exclude=vendor/ --exclude=.venv/ \
-  --exclude=local/ --exclude=target/ --exclude=.bundle/ --exclude=__pycache__/ \
+  --exclude=local/ --exclude=target/ --exclude=__pycache__/ \
   --exclude=/go/isureal --exclude=/rust/isureal \
   --exclude='*.log' --exclude='*.pid' --exclude='*.sock' \
   "$repo_root/webapp/" "$live_webapp/"
@@ -134,7 +165,8 @@ case "$language" in
     mv -f "$live_webapp/$language/isureal.next" "$live_webapp/$language/isureal"
     ;;
   nodejs) (cd "$live_webapp/nodejs" && npm ci --omit=dev) ;;
-  perl|php|python|ruby) make -C "$live_webapp/$language" install ;;
+  ruby) (cd "$live_webapp/ruby" && bundle install) ;;
+  perl|php|python) make -C "$live_webapp/$language" install ;;
 esac
 
 sudo systemctl restart "isureal-$language.service"

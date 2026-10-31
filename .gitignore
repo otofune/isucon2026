@@ -5,15 +5,9 @@
 *.swp
 *.swo
 
-# Credentials and machine-specific environment
-.env
-.env.*
-!.env.example
-!.env.sample
-env.sh
-.ssh/
-*.pem
-*.key
+# Version contest environment settings, including when global ignores exclude them
+!.env*
+!env.sh
 
 # Dependencies and caches (keep dependency manifests and lockfiles)
 node_modules/
@@ -21,7 +15,6 @@ vendor/
 .venv/
 __pycache__/
 *.py[cod]
-.bundle/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
@@ -35,13 +28,3 @@ __pycache__/
 *.test
 coverage/
 .coverage
-
-# Runtime files and database dumps
-*.log
-*.pid
-*.sock
-*.prof
-*.pprof
-*.dump
-*.sql.gz
-*.sql.zst
