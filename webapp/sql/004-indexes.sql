@@ -8,6 +8,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS users_username ON users(username);
 CREATE INDEX IF NOT EXISTS posts_image_id_active ON posts(image_id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS realmojis_image_id_active ON realmojis(image_id) WHERE replaced_at IS NULL AND deleted_at IS NULL;
 
+-- Memories と投稿回数の確認。著者の全履歴を読まずに期間で引く。
+CREATE INDEX IF NOT EXISTS posts_author_window ON posts(author_id, posting_window_id);
+
 -- 関係の逆方向検索
 CREATE INDEX IF NOT EXISTS friendships_user_high_id ON friendships(user_high_id);
 CREATE INDEX IF NOT EXISTS follows_followee_id ON follows(followee_id);

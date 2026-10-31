@@ -332,3 +332,105 @@ BEGIN
   UPDATE posting_windows w SET ended_at = NULL WHERE w.id = p_window;
   RETURN QUERY SELECT 'ok'::text, v_starts, v_deadline;
 END $$;
+
+DROP FUNCTION IF EXISTS isu_follow(text, text, text);
+CREATE FUNCTION isu_follow(p_actor text, p_target text, p_follow text) RETURNS text LANGUAGE plpgsql AS $$
+#variable_conflict use_column
+DECLARE
+  v_type text;
+BEGIN
+  IF NOT isu_lock_pair(p_actor, p_target) THEN
+    RETURN 'not_found';
+  END IF;
+  SELECT u.account_type INTO v_type FROM users u WHERE u.id = p_target AND u.status = 'active';
+  IF v_type IS DISTINCT FROM 'certified_public' THEN
+    RETURN 'conflict';
+  END IF;
+  IF EXISTS(SELECT 1 FROM block_relations b WHERE (b.blocker_id = p_actor AND b.blocked_id = p_target) OR (b.blocker_id = p_target AND b.blocked_id = p_actor))
+     OR EXISTS(SELECT 1 FROM follows f WHERE f.follower_id = p_actor AND f.followee_id = p_target) THEN
+    RETURN 'conflict';
+  END IF;
+  INSERT INTO follows (id, follower_id, followee_id) VALUES (p_follow, p_actor, p_target);
+  RETURN 'ok';
+END $$;
+
+DROP FUNCTION IF EXISTS isu_replace_profile_image(text, text, text);
+CREATE FUNCTION isu_replace_profile_image(p_user text, p_image text, p_origin text) RETURNS text LANGUAGE plpgsql AS $$
+#variable_conflict use_column
+DECLARE
+  v_old text;
+BEGIN
+  SELECT u.profile_image_id INTO v_old FROM users u WHERE u.id = p_user FOR NO KEY UPDATE;
+  IF NOT FOUND THEN
+    RETURN 'not_found';
+  END IF;
+  INSERT INTO image_objects (id, owner_user_id, data, media_type, origin) VALUES (p_image, p_user, '\x', 'image/jpeg', p_origin);
+  UPDATE users SET profile_image_id = p_image, updated_at = clock_timestamp() WHERE id = p_user;
+  IF v_old IS NOT NULL THEN
+    DELETE FROM image_objects WHERE id = v_old;
+  END IF;
+  RETURN 'ok';
+END $$;
+
+DROP FUNCTION IF EXISTS isu_delete_profile_image(text);
+CREATE FUNCTION isu_delete_profile_image(p_user text) RETURNS text LANGUAGE plpgsql AS $$
+#variable_conflict use_column
+DECLARE
+  v_old text;
+BEGIN
+  SELECT u.profile_image_id INTO v_old FROM users u WHERE u.id = p_user FOR NO KEY UPDATE;
+  IF NOT FOUND OR v_old IS NULL THEN
+    RETURN 'not_found';
+  END IF;
+  UPDATE users SET profile_image_id = NULL, updated_at = clock_timestamp() WHERE id = p_user;
+  DELETE FROM image_objects WHERE id = v_old;
+  RETURN 'ok';
+END $$;
+
+DROP FUNCTION IF EXISTS isu_delete_post(text, text);
+CREATE FUNCTION isu_delete_post(p_user text, p_post text) RETURNS text LANGUAGE plpgsql AS $$
+#variable_conflict use_column
+DECLARE
+  v_author text;
+  v_date date;
+  v_deletions int;
+BEGIN
+  PERFORM 1 FROM users u WHERE u.id = p_user FOR NO KEY UPDATE;
+  SELECT p.author_id, w.local_date INTO v_author, v_date
+    FROM posts p JOIN posting_windows w ON w.id = p.posting_window_id
+    WHERE p.id = p_post AND p.deleted_at IS NULL;
+  IF NOT FOUND THEN
+    RETURN 'not_found';
+  END IF;
+  IF v_author <> p_user THEN
+    RETURN 'forbidden';
+  END IF;
+  SELECT count(*) INTO v_deletions FROM posts p JOIN posting_windows w ON w.id = p.posting_window_id
+    WHERE p.author_id = p_user AND w.local_date = v_date AND p.deleted_at IS NOT NULL;
+  IF v_deletions >= 2 THEN
+    RETURN 'unavailable';
+  END IF;
+  UPDATE posts SET deleted_at = clock_timestamp() WHERE id = p_post;
+  RETURN 'ok';
+END $$;
+
+DROP FUNCTION IF EXISTS isu_update_post(text, text, text, text);
+CREATE FUNCTION isu_update_post(p_user text, p_post text, p_caption text, p_visibility text) RETURNS text LANGUAGE plpgsql AS $$
+#variable_conflict use_column
+DECLARE
+  v_author text;
+  v_ended timestamptz;
+BEGIN
+  PERFORM 1 FROM users u WHERE u.id = p_user FOR NO KEY UPDATE;
+  SELECT p.author_id, w.ended_at INTO v_author, v_ended
+    FROM posts p JOIN posting_windows w ON w.id = p.posting_window_id
+    WHERE p.id = p_post AND p.deleted_at IS NULL;
+  IF NOT FOUND THEN
+    RETURN 'not_found';
+  END IF;
+  IF v_author <> p_user OR v_ended IS NOT NULL THEN
+    RETURN 'forbidden';
+  END IF;
+  UPDATE posts SET caption = COALESCE(p_caption, caption), visibility = COALESCE(p_visibility, visibility) WHERE id = p_post;
+  RETURN 'ok';
+END $$;

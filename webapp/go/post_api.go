@@ -221,54 +221,22 @@ func updatePostHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		ctx := c.Request().Context()
 		userID := GetSession(c).UserID
-		tx, err := h.DB.BeginTxx(ctx, nil)
-		if err != nil {
+		var result string
+		if err := h.DB.GetContext(ctx, &result, `SELECT isu_update_post($1, $2, $3, $4)`, userID, input.PostID, input.Caption, input.Visibility); err != nil {
 			return err
 		}
-		defer tx.Rollback()
-		var lockedUserID string
-		if err := tx.GetContext(ctx, &lockedUserID, `SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE`, userID); err != nil {
-			return err
-		}
-		post, err := getPost(ctx, tx, input.PostID)
-		if errors.Is(err, sql.ErrNoRows) {
+		switch result {
+		case "ok":
+		case "not_found":
 			return NewAPIError(http.StatusNotFound, "post_not_found")
-		}
-		if err != nil {
-			return err
-		}
-		if post.AuthorID != userID {
+		default:
 			return NewAPIError(http.StatusForbidden, "post_not_editable")
 		}
-		window, err := getPostingWindow(ctx, tx, post.PostingWindowID)
+		post, err := getPostWithAuthor(ctx, h.DB, input.PostID)
 		if err != nil {
 			return err
 		}
-		if window.EndedAt != nil {
-			return NewAPIError(http.StatusForbidden, "post_not_editable")
-		}
-		if input.Caption != nil {
-			if _, err := tx.ExecContext(ctx, `UPDATE posts SET caption = $2 WHERE id = $1`, post.ID, *input.Caption); err != nil {
-				return err
-			}
-		}
-		if input.Visibility != nil {
-			if _, err := tx.ExecContext(ctx, `UPDATE posts SET visibility = $2 WHERE id = $1`, post.ID, *input.Visibility); err != nil {
-				return err
-			}
-		}
-		post, err = getPost(ctx, tx, post.ID)
-		if err != nil {
-			return err
-		}
-		user, err := getUser(ctx, tx, userID)
-		if err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		return c.JSON(http.StatusOK, updatePostResponse(newPostResponse(post, user)))
+		return c.JSON(http.StatusOK, updatePostResponse(newPostResponse(post.Post, post.Author)))
 	}
 }
 
@@ -284,45 +252,19 @@ func deletePostHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		ctx := c.Request().Context()
 		userID := GetSession(c).UserID
-		tx, err := h.DB.BeginTxx(ctx, nil)
-		if err != nil {
+		var result string
+		if err := h.DB.GetContext(ctx, &result, `SELECT isu_delete_post($1, $2)`, userID, input.PostID); err != nil {
 			return err
 		}
-		defer tx.Rollback()
-		var lockedUserID string
-		if err := tx.GetContext(ctx, &lockedUserID, `SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE`, userID); err != nil {
-			return err
-		}
-		post, err := getPost(ctx, tx, input.PostID)
-		if errors.Is(err, sql.ErrNoRows) {
+		switch result {
+		case "ok":
+			return c.NoContent(http.StatusNoContent)
+		case "not_found":
 			return NewAPIError(http.StatusNotFound, "post_not_found")
-		}
-		if err != nil {
-			return err
-		}
-		if post.AuthorID != userID {
+		case "forbidden":
 			return NewAPIError(http.StatusForbidden, "post_not_editable")
-		}
-		window, err := getPostingWindow(ctx, tx, post.PostingWindowID)
-		if err != nil {
-			return err
-		}
-		var deletions int
-		if err := tx.GetContext(ctx, &deletions, `
-   SELECT count(*) FROM posts p JOIN posting_windows w ON w.id = p.posting_window_id
-   WHERE p.author_id = $1 AND w.local_date = $2 AND p.deleted_at IS NOT NULL
-  `, userID, window.LocalDate); err != nil {
-			return err
-		}
-		if deletions >= 2 {
+		default:
 			return NewAPIError(http.StatusConflict, "post_slot_unavailable")
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE posts SET deleted_at = clock_timestamp() WHERE id = $1`, post.ID); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		return c.NoContent(http.StatusNoContent)
 	}
 }
