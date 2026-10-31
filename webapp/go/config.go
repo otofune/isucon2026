@@ -33,7 +33,7 @@ func ConfigFromEnv() *Config {
 		LogLevel:      envOrDefault("ISUREAL_LOG_LEVEL", "debug"),
 		JPEGWorker:    envOrDefault("ISUREAL_JPEG_WORKER", "off") == "on",
 		SessionCache:  envOrDefault("ISUREAL_SESSION_CACHE", "on") == "on",
-		DBConnections: envInt("ISUREAL_DB_CONNECTIONS", 25),
+		DBConnections: envInt("ISUREAL_DB_CONNECTIONS", 30),
 		ImageCacheMB:  envInt("ISUREAL_IMAGE_CACHE_MB", 512),
 	}
 }
