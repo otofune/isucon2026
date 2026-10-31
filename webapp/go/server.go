@@ -90,6 +90,7 @@ func NewServer(config *Config) *echo.Echo {
 	e.POST("/_internal/notifications/wake", internalWakeNotificationsHandler(handlerContext), internalOnly(handlerContext))
 	e.GET("/_internal/images/:imageId", internalGetImageHandler(), internalOnly(handlerContext))
 	e.POST("/_internal/jpeg", internalValidateJPEGHandler(), internalOnly(handlerContext))
+	e.POST("/_internal/relations/invalidate", internalInvalidateRelationsHandler(), internalOnly(handlerContext))
 	e.POST("/_internal/sign", internalSignHandler(), internalOnly(handlerContext))
 	e.POST("/_internal/reset", internalResetHandler(handlerContext), internalOnly(handlerContext))
 	e.POST("/api/initialize", initializeHandler(handlerContext))

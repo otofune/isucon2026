@@ -87,7 +87,7 @@ END $$;
 
 DROP FUNCTION IF EXISTS isu_create_friend_request(text, text, text, text);
 CREATE FUNCTION isu_create_friend_request(p_actor text, p_target text, p_request text, p_friendship text)
-RETURNS TABLE (result text, id text, status text, updated_at timestamptz) LANGUAGE plpgsql AS $$
+RETURNS TABLE (result text, id text, status text, updated_at timestamptz, requester_id text, recipient_id text) LANGUAGE plpgsql AS $$
 #variable_conflict use_column
 DECLARE
   pending friend_requests%ROWTYPE;
@@ -95,13 +95,13 @@ DECLARE
   high text;
 BEGIN
   IF NOT isu_lock_pair(p_actor, p_target) THEN
-    RETURN QUERY SELECT 'not_found'::text, ''::text, ''::text, NULL::timestamptz;
+    RETURN QUERY SELECT 'not_found'::text, ''::text, ''::text, NULL::timestamptz, ''::text, ''::text;
     RETURN;
   END IF;
   IF p_actor COLLATE "C" < p_target COLLATE "C" THEN low := p_actor; high := p_target; ELSE low := p_target; high := p_actor; END IF;
   IF EXISTS(SELECT 1 FROM block_relations b WHERE (b.blocker_id = p_actor AND b.blocked_id = p_target) OR (b.blocker_id = p_target AND b.blocked_id = p_actor))
      OR EXISTS(SELECT 1 FROM friendships f WHERE f.user_low_id = low AND f.user_high_id = high) THEN
-    RETURN QUERY SELECT 'conflict'::text, ''::text, ''::text, NULL::timestamptz;
+    RETURN QUERY SELECT 'conflict'::text, ''::text, ''::text, NULL::timestamptz, ''::text, ''::text;
     RETURN;
   END IF;
   SELECT * INTO pending FROM friend_requests r WHERE r.status = 'pending'
@@ -109,47 +109,47 @@ BEGIN
     LIMIT 1;
   IF FOUND THEN
     IF pending.requester_id = p_actor THEN
-      RETURN QUERY SELECT 'conflict'::text, ''::text, ''::text, NULL::timestamptz;
+      RETURN QUERY SELECT 'conflict'::text, ''::text, ''::text, NULL::timestamptz, ''::text, ''::text;
       RETURN;
     END IF;
     INSERT INTO friendships (id, user_low_id, user_high_id, source_request_id) VALUES (p_friendship, low, high, pending.id);
     RETURN QUERY UPDATE friend_requests r SET status = 'accepted', updated_at = clock_timestamp()
-      WHERE r.id = pending.id RETURNING 'ok'::text, r.id::text, r.status, r.updated_at;
+      WHERE r.id = pending.id RETURNING 'ok'::text, r.id::text, r.status, r.updated_at, r.requester_id::text, r.recipient_id::text;
     RETURN;
   END IF;
   RETURN QUERY INSERT INTO friend_requests AS r (id, requester_id, recipient_id, status, created_at, updated_at)
     VALUES (p_request, p_actor, p_target, 'pending', clock_timestamp(), clock_timestamp())
-    RETURNING 'ok'::text, r.id::text, r.status, r.updated_at;
+    RETURNING 'ok'::text, r.id::text, r.status, r.updated_at, r.requester_id::text, r.recipient_id::text;
 END $$;
 
 DROP FUNCTION IF EXISTS isu_transition_friend_request(text, text, text, text);
 CREATE FUNCTION isu_transition_friend_request(p_request text, p_actor text, p_status text, p_friendship text)
-RETURNS TABLE (result text, id text, status text, updated_at timestamptz) LANGUAGE plpgsql AS $$
+RETURNS TABLE (result text, id text, status text, updated_at timestamptz, requester_id text, recipient_id text) LANGUAGE plpgsql AS $$
 #variable_conflict use_column
 DECLARE
   request friend_requests%ROWTYPE;
 BEGIN
   SELECT * INTO request FROM friend_requests r WHERE r.id = p_request;
   IF NOT FOUND THEN
-    RETURN QUERY SELECT 'not_found'::text, ''::text, ''::text, NULL::timestamptz;
+    RETURN QUERY SELECT 'not_found'::text, ''::text, ''::text, NULL::timestamptz, ''::text, ''::text;
     RETURN;
   END IF;
   IF (p_status = 'cancelled' AND p_actor <> request.requester_id) OR (p_status <> 'cancelled' AND p_actor <> request.recipient_id) THEN
-    RETURN QUERY SELECT 'forbidden'::text, ''::text, ''::text, NULL::timestamptz;
+    RETURN QUERY SELECT 'forbidden'::text, ''::text, ''::text, NULL::timestamptz, ''::text, ''::text;
     RETURN;
   END IF;
   IF NOT isu_lock_pair(request.requester_id, request.recipient_id) THEN
-    RETURN QUERY SELECT 'not_found'::text, ''::text, ''::text, NULL::timestamptz;
+    RETURN QUERY SELECT 'not_found'::text, ''::text, ''::text, NULL::timestamptz, ''::text, ''::text;
     RETURN;
   END IF;
   SELECT * INTO request FROM friend_requests r WHERE r.id = p_request;
   IF request.status <> 'pending' THEN
-    RETURN QUERY SELECT 'forbidden'::text, ''::text, ''::text, NULL::timestamptz;
+    RETURN QUERY SELECT 'forbidden'::text, ''::text, ''::text, NULL::timestamptz, ''::text, ''::text;
     RETURN;
   END IF;
   IF p_status = 'accepted' THEN
     IF EXISTS(SELECT 1 FROM block_relations b WHERE (b.blocker_id = request.requester_id AND b.blocked_id = request.recipient_id) OR (b.blocker_id = request.recipient_id AND b.blocked_id = request.requester_id)) THEN
-      RETURN QUERY SELECT 'conflict'::text, ''::text, ''::text, NULL::timestamptz;
+      RETURN QUERY SELECT 'conflict'::text, ''::text, ''::text, NULL::timestamptz, ''::text, ''::text;
       RETURN;
     END IF;
     INSERT INTO friendships (id, user_low_id, user_high_id, source_request_id) VALUES (
@@ -159,7 +159,7 @@ BEGIN
       request.id);
   END IF;
   RETURN QUERY UPDATE friend_requests r SET status = p_status, updated_at = clock_timestamp()
-    WHERE r.id = request.id RETURNING 'ok'::text, r.id::text, r.status, r.updated_at;
+    WHERE r.id = request.id RETURNING 'ok'::text, r.id::text, r.status, r.updated_at, r.requester_id::text, r.recipient_id::text;
 END $$;
 
 -- post.go の viewerContext.canView と comment.go の canComment と同じ判定。

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -49,21 +50,11 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		defer func(start time.Time) { observe("feed.total", time.Since(start)) }(time.Now())
 		ctx := c.Request().Context()
+		// 関係はメモリから読み、閲覧者の確認と投稿の取得を並行して1往復にする。
+		viewer := newViewerContext(GetSession(c).UserID)
 		// 友達と公開のフィードの判定に友達の友達は使わない。
-		load := loadViewerContext
-		if input.Feed == "friends" || input.Feed == "public" {
-			load = loadDirectViewerContext
-		}
-		viewer, err := load(ctx, h.DB, GetSession(c).UserID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return c.JSON(http.StatusOK, getFeedResponse{Items: []feedItemResponse{}})
-		}
-		if err != nil {
+		if err := applyRelations(ctx, h.DB, &viewer, input.Feed != "friends" && input.Feed != "public"); err != nil {
 			return err
-		}
-		// 当日の投稿がなければ他人の投稿は1件も見えない。
-		if !viewer.HasPostedToday {
-			return c.JSON(http.StatusOK, getFeedResponse{Items: []feedItemResponse{}})
 		}
 		following := map[string]bool{}
 		if input.Feed == "following" {
@@ -79,9 +70,28 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 		if ranked {
 			beforePostedAt, beforeID = nil, ""
 		}
-		posts, err := selectFeedCandidates(ctx, h.DB, viewer, input.Feed, following, beforePostedAt, beforeID)
+		relationsOnly := viewer
+		var baseErr error
+		var baseDone sync.WaitGroup
+		baseDone.Add(1)
+		go func() {
+			defer baseDone.Done()
+			baseErr = loadViewerBase(ctx, h.DB, &viewer)
+		}()
+		posts, err := selectFeedCandidates(ctx, h.DB, relationsOnly, input.Feed, following, beforePostedAt, beforeID)
+		baseDone.Wait()
+		if errors.Is(baseErr, sql.ErrNoRows) {
+			return c.JSON(http.StatusOK, getFeedResponse{Items: []feedItemResponse{}})
+		}
+		if baseErr != nil {
+			return baseErr
+		}
 		if err != nil {
 			return err
+		}
+		// 当日の投稿がなければ他人の投稿は1件も見えない。
+		if !viewer.HasPostedToday {
+			return c.JSON(http.StatusOK, getFeedResponse{Items: []feedItemResponse{}})
 		}
 		candidates := make([]PostWithAuthor, 0)
 		for _, post := range posts {

@@ -10,10 +10,12 @@ import (
 
 // friendRequestResult は関係変更の関数の結果。ok 以外では ID などは空になる。
 type friendRequestResult struct {
-	Result    string     `db:"result"`
-	ID        string     `db:"id"`
-	Status    string     `db:"status"`
-	UpdatedAt *time.Time `db:"updated_at"`
+	Result      string     `db:"result"`
+	ID          string     `db:"id"`
+	Status      string     `db:"status"`
+	UpdatedAt   *time.Time `db:"updated_at"`
+	RequesterID string     `db:"requester_id"`
+	RecipientID string     `db:"recipient_id"`
 }
 
 type createFriendRequestRequest struct {
@@ -47,6 +49,11 @@ func createFriendRequestHandler(h *HandlerContext) echo.HandlerFunc {
 			return NewAPIError(http.StatusNotFound, "relationship_not_found")
 		default:
 			return NewAPIError(http.StatusConflict, "relationship_conflict")
+		}
+		if request.Status == "accepted" {
+			if err := h.relationsChanged(ctx, request.RequesterID, request.RecipientID); err != nil {
+				return err
+			}
 		}
 		return c.JSON(http.StatusCreated, createFriendRequestResponse{RelationID: request.ID, Status: request.Status, UpdatedAt: *request.UpdatedAt})
 	}
@@ -90,6 +97,11 @@ func transitionFriendRequestHandler(h *HandlerContext) echo.HandlerFunc {
 			return NewAPIError(http.StatusConflict, "relationship_conflict")
 		default:
 			return NewAPIError(http.StatusForbidden, "relationship_action_forbidden")
+		}
+		if request.Status == "accepted" {
+			if err := h.relationsChanged(ctx, request.RequesterID, request.RecipientID); err != nil {
+				return err
+			}
 		}
 		return c.JSON(http.StatusOK, transitionFriendRequestResponse{RelationID: request.ID, Status: request.Status, UpdatedAt: *request.UpdatedAt})
 	}

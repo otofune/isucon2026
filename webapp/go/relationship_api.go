@@ -31,6 +31,9 @@ func deleteFriendshipHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		if err := h.relationsChanged(ctx, actor, input.UserID); err != nil {
+			return err
+		}
 		return c.NoContent(http.StatusNoContent)
 	}
 }
@@ -132,6 +135,9 @@ func blockHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		if err := h.relationsChanged(ctx, actor, input.UserID); err != nil {
+			return err
+		}
 		return c.NoContent(http.StatusNoContent)
 	}
 }
@@ -158,6 +164,9 @@ func unblockHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
+			return err
+		}
+		if err := h.relationsChanged(ctx, actor, input.UserID); err != nil {
 			return err
 		}
 		return c.NoContent(http.StatusNoContent)

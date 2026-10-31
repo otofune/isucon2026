@@ -3,7 +3,6 @@ package isureal
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -102,24 +101,8 @@ type viewerContext struct {
 	Blocked          map[string]bool
 }
 
-// 海外リージョンでは SQL 1回が1往復になるので、閲覧に必要な関係を1回の SQL で取得する。
-var viewerQueryFull = strings.ReplaceAll(viewerQueryTemplate, "REACHABLE", `(
-      SELECT COALESCE(json_object_agg(id, connections), '{}')::text
-      FROM (SELECT id, count(*) AS connections FROM reachable GROUP BY id) counted
-    )`)
-
-var viewerQueryDirect = strings.ReplaceAll(viewerQueryTemplate, "REACHABLE", `'{}'::text`)
-
-var viewerQueryTemplate = `
-  WITH friends AS (
-    SELECT user_high_id AS id FROM friendships WHERE user_low_id = $1
-    UNION ALL
-    SELECT user_low_id FROM friendships WHERE user_high_id = $1
-  ), reachable AS (
-    SELECT f.user_high_id AS id FROM friendships f JOIN friends ON friends.id = f.user_low_id
-    UNION ALL
-    SELECT f.user_low_id FROM friendships f JOIN friends ON friends.id = f.user_high_id
-  )
+// viewerBaseQuery は関係以外の閲覧者の情報を読む。関係は relations から読む。
+var viewerBaseQuery = `
   SELECT ` + strings.Join(userColumns, ", ") + `,
     EXISTS(
       SELECT 1 FROM posts p
@@ -127,68 +110,39 @@ var viewerQueryTemplate = `
       JOIN posting_windows current ON current.region = u.region AND current.ended_at IS NULL
                                   AND current.local_date = posted.local_date
       WHERE p.author_id = u.id AND p.deleted_at IS NULL
-    ) AS has_posted_today,
-    (
-      SELECT COALESCE(json_agg(CASE WHEN blocker_id = $1 THEN blocked_id ELSE blocker_id END), '[]')::text
-      FROM block_relations WHERE blocker_id = $1 OR blocked_id = $1
-    ) AS blocked,
-    (SELECT COALESCE(json_agg(id), '[]')::text FROM friends) AS friends,
-    REACHABLE AS reachable
+    ) AS has_posted_today
   FROM users u
   WHERE u.id = $1 AND u.status = 'active'
  `
 
-func loadViewerContext(ctx context.Context, db sqlx.QueryerContext, viewerID string) (viewerContext, error) {
-	return queryViewerContext(ctx, db, viewerQueryFull, viewerID)
-}
-
-// loadDirectViewerContext は友達の友達を必要としない処理のために2段目の展開を省く。
-func loadDirectViewerContext(ctx context.Context, db sqlx.QueryerContext, viewerID string) (viewerContext, error) {
-	return queryViewerContext(ctx, db, viewerQueryDirect, viewerID)
-}
-
-func queryViewerContext(ctx context.Context, db sqlx.QueryerContext, query, viewerID string) (viewerContext, error) {
+func newViewerContext(id string) viewerContext {
 	viewer := viewerContext{Friends: map[string]bool{}, FriendsOfFriends: map[string]bool{}, MutualFriends: map[string]int{}}
+	viewer.ID = id
+	return viewer
+}
+
+func loadViewerBase(ctx context.Context, db sqlx.QueryerContext, viewer *viewerContext) error {
 	var row struct {
 		User
-		HasPostedToday bool   `db:"has_posted_today"`
-		Blocked        string `db:"blocked"`
-		Friends        string `db:"friends"`
-		Reachable      string `db:"reachable"`
+		HasPostedToday bool `db:"has_posted_today"`
 	}
-	if err := sqlx.GetContext(ctx, db, &row, query, viewerID); err != nil {
-		return viewer, err
+	if err := sqlx.GetContext(ctx, db, &row, viewerBaseQuery, viewer.ID); err != nil {
+		return err
 	}
 	if err := row.User.setImageKey(); err != nil {
-		return viewer, err
+		return err
 	}
 	viewer.User = row.User
 	viewer.HasPostedToday = row.HasPostedToday
-	var blocked, friends []string
-	if err := json.Unmarshal([]byte(row.Blocked), &blocked); err != nil {
+	return nil
+}
+
+func loadViewerContext(ctx context.Context, db sqlx.QueryerContext, viewerID string) (viewerContext, error) {
+	viewer := newViewerContext(viewerID)
+	if err := loadViewerBase(ctx, db, &viewer); err != nil {
 		return viewer, err
 	}
-	if err := json.Unmarshal([]byte(row.Friends), &friends); err != nil {
-		return viewer, err
-	}
-	var reachable map[string]int
-	if err := json.Unmarshal([]byte(row.Reachable), &reachable); err != nil {
-		return viewer, err
-	}
-	viewer.Blocked = make(map[string]bool, len(blocked))
-	for _, id := range blocked {
-		viewer.Blocked[id] = true
-	}
-	for _, id := range friends {
-		viewer.Friends[id] = true
-	}
-	for id, connections := range reachable {
-		viewer.FriendsOfFriends[id] = true
-		if id != viewer.ID {
-			viewer.MutualFriends[id] = connections
-		}
-	}
-	return viewer, nil
+	return viewer, applyRelations(ctx, db, &viewer, true)
 }
 
 func (viewer viewerContext) canView(post Post) bool {

@@ -16,6 +16,10 @@ type internalInvalidateRequest struct {
 	UserID string `json:"userId"`
 }
 
+type internalRelationsRequest struct {
+	UserIDs []string `json:"userIds"`
+}
+
 func internalOnly(h *HandlerContext) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
@@ -46,10 +50,22 @@ func internalWakeNotificationsHandler(h *HandlerContext) echo.HandlerFunc {
 	}
 }
 
+func internalInvalidateRelationsHandler() echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		var input internalRelationsRequest
+		if err := c.Bind(&input); err != nil {
+			return err
+		}
+		relations.invalidate(input.UserIDs)
+		return c.NoContent(http.StatusNoContent)
+	}
+}
+
 func internalResetHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		h.Sessions.clear()
 		h.Images.clear()
+		relations.clear()
 		resetTimings()
 		if err := resetImageFiles(); err != nil {
 			return err
