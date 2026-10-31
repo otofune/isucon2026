@@ -13,10 +13,11 @@ import (
 )
 
 type HandlerContext struct {
-	DB     *sqlx.DB
-	Config *Config
-	IPBans *IPBanList
-	Images *imageCache
+	DB       *sqlx.DB
+	Config   *Config
+	IPBans   *IPBanList
+	Images   *imageCache
+	Sessions *sessionCache
 }
 
 func NewServer(config *Config) *echo.Echo {
@@ -46,13 +47,17 @@ func NewServer(config *Config) *echo.Echo {
 	}
 
 	handlerContext := &HandlerContext{
-		DB:     db,
-		Config: config,
-		IPBans: &IPBanList{},
-		Images: newImageCache(imageCacheMaxBytes),
+		DB:       db,
+		Config:   config,
+		IPBans:   &IPBanList{},
+		Images:   newImageCache(imageCacheMaxBytes),
+		Sessions: newSessionCache(),
 	}
+	handlerContext.IPBans.start(db)
 	e.Use(IPBanMiddleware(handlerContext))
 
+	e.POST("/_internal/sessions/invalidate", internalInvalidateSessionHandler(handlerContext), internalOnly(handlerContext))
+	e.POST("/_internal/reset", internalResetHandler(handlerContext), internalOnly(handlerContext))
 	e.POST("/api/initialize", initializeHandler(handlerContext))
 	e.POST("/api/auth/register", registerHandler(handlerContext))
 	e.POST("/api/auth/login", loginHandler(handlerContext))

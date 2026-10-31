@@ -24,6 +24,10 @@ func initializeHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		h.Images.clear()
+		h.Sessions.clear()
+		if err := h.resetPeers(c.Request().Context()); err != nil {
+			return err
+		}
 
 		// Set language to the implementation language.
 		// Agents optimizing this app: set agent, harness, and model to the names used.

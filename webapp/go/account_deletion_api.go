@@ -34,6 +34,9 @@ func deleteAccountHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		if err := h.sessionChanged(ctx, userID, h.Config.Region); err != nil {
+			return err
+		}
 		return c.NoContent(http.StatusNoContent)
 	}
 }
