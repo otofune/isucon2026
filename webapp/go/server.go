@@ -14,6 +14,7 @@ import (
 )
 
 type HandlerContext struct {
+	AdminDB          *sqlx.DB
 	DB               *sqlx.DB
 	Config           *Config
 	IPBans           *IPBanList

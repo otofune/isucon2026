@@ -44,7 +44,7 @@ func openPostingWindowHandler(h *HandlerContext) echo.HandlerFunc {
 			OnTimeDeadline *time.Time `db:"on_time_deadline"`
 		}
 		windowID := uuid.NewString()
-		if err := h.DB.GetContext(ctx, &opened, `SELECT * FROM isu_open_posting_window($1, $2, $3, $4)`, windowID, region, input.LocalDate, seconds); err != nil {
+		if err := h.AdminDB.GetContext(ctx, &opened, `SELECT * FROM isu_open_posting_window($1, $2, $3, $4)`, windowID, region, input.LocalDate, seconds); err != nil {
 			return err
 		}
 		if opened.Result != "ok" {

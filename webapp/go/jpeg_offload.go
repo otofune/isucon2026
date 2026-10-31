@@ -27,7 +27,7 @@ type jpegSize struct {
 }
 
 func (h *HandlerContext) validatePostJPEG(ctx context.Context, data []byte) (width, height int, err error) {
-	if h.Config.Region == "asia" && len(data) > jpegSlotThreshold {
+	if h.Config.Region == "asia" && len(data) > jpegSlotThreshold && h.Config.JPEGWorker {
 		select {
 		case jpegRemoteSlot <- struct{}{}:
 			width, height, err = h.validateRemoteJPEG(ctx, data)

@@ -307,6 +307,8 @@ END $$;
 CREATE TRIGGER users_version_bump AFTER INSERT OR DELETE OR UPDATE OF username, display_name, status ON users
   FOR EACH STATEMENT EXECUTE FUNCTION isu_bump_users_version();
 
+-- 通知は接続後に作られたものしか SSE で返さないので、有効なセッションを持たない
+-- 利用者の通知は読まれない。対象を絞って期間開始を短くする。
 -- 新しい期間と通知を先に作り、最後に切り替える。旧期間の行を掴むのは切り替えの間だけで、
 -- 投稿は通知の一括 INSERT を待たない。コミットまで他のトランザクションには見えない。
 DROP FUNCTION IF EXISTS isu_open_posting_window(text, text, date, bigint);
@@ -327,7 +329,9 @@ BEGIN
   INSERT INTO posting_windows (id, region, local_date, starts_at, on_time_deadline, ended_at)
     VALUES (p_window, p_region, p_date, v_starts, v_deadline, v_starts);
   INSERT INTO notifications (id, user_id, posting_window_id, created_at)
-    SELECT gen_random_uuid()::text, u.id, p_window, v_starts FROM users u WHERE u.region = p_region AND u.status = 'active';
+    SELECT gen_random_uuid()::text, u.id, p_window, v_starts FROM users u
+    WHERE u.region = p_region AND u.status = 'active'
+      AND u.id IN (SELECT s.user_id FROM login_sessions s WHERE s.active);
   UPDATE posting_windows w SET ended_at = v_starts WHERE w.region = p_region AND w.ended_at IS NULL;
   UPDATE posting_windows w SET ended_at = NULL WHERE w.id = p_window;
   RETURN QUERY SELECT 'ok'::text, v_starts, v_deadline;

@@ -14,6 +14,7 @@ type Config struct {
 	DBPassword string
 	DBName     string
 	LogLevel   string
+	JPEGWorker bool
 }
 
 func ConfigFromEnv() *Config {
@@ -25,6 +26,7 @@ func ConfigFromEnv() *Config {
 		DBPassword: envOrDefault("ISUREAL_DB_PASSWORD", "isureal"),
 		DBName:     envOrDefault("ISUREAL_DB_NAME", "isureal"),
 		LogLevel:   envOrDefault("ISUREAL_LOG_LEVEL", "debug"),
+		JPEGWorker: envOrDefault("ISUREAL_JPEG_WORKER", "off") == "on",
 	}
 }
 
