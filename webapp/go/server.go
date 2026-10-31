@@ -47,11 +47,18 @@ func NewServer(config *Config) *echo.Echo {
 		panic("failed to ping database: " + err.Error())
 	}
 
+	localDB, err := sqlx.Open("pgx", config.LocalDatabaseDSN())
+	if err != nil {
+		panic("failed to open local image store: " + err.Error())
+	}
+	localDB.SetMaxOpenConns(16)
+	localDB.SetMaxIdleConns(16)
+
 	handlerContext := &HandlerContext{
 		DB:               db,
 		Config:           config,
 		IPBans:           &IPBanList{},
-		Images:           newImageCache(imageCacheMaxBytes),
+		Images:           newImageCache(localDB, imageCacheMaxBytes),
 		Sessions:         newSessionCache(),
 		NotificationWake: newNotificationHub(),
 	}

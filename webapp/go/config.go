@@ -38,6 +38,17 @@ func (c *Config) DatabaseDSN() string {
 	return u.String()
 }
 
+// LocalDatabaseDSN は同じ台の初期画像ストアへの接続先。
+func (c *Config) LocalDatabaseDSN() string {
+	u := url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(c.DBUser, c.DBPassword),
+		Host:   net.JoinHostPort("127.0.0.1", "5432"),
+		Path:   "/" + c.DBName,
+	}
+	return u.String()
+}
+
 func envOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value

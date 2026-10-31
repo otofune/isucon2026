@@ -10,8 +10,14 @@ instance=$(awk -v host="$(hostname -s)" '$1 == host {print $2}' system/hosts.tsv
 sudo cp -r system/common/. "system/${instance:?unknown host}/." /
 sudo systemctl daemon-reload
 
-if systemctl is-active --quiet postgresql@16-main.service; then
-  sudo systemctl restart postgresql@16-main.service
+# アプリ台の PostgreSQL は初期画像の読み取り専用ストア。再起動後も起動するよう有効にする。
+if [[ $instance == asia2 ]]; then
+  if systemctl is-active --quiet postgresql@16-main.service; then
+    sudo systemctl restart postgresql@16-main.service
+  fi
+else
+  sudo systemctl enable --quiet postgresql.service
+  sudo systemctl start postgresql@16-main.service
 fi
 
 # 落ちている台にも反映できるよう、is-active ではなく is-enabled で判定する。

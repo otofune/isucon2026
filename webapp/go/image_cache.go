@@ -10,6 +10,8 @@ import (
 
 const imageCacheMaxBytes = 1 << 30
 
+// 各アプリ台の PostgreSQL には初期データの画像が入っている。不変なので読み取り専用の
+// ストアとして使い、地域間の転送と共有 DB のディスク読み込みを避ける。書き込みはしない。
 // cachedImage は画像の不変な情報だけを持つ。画像 ID は再利用されないので、
 // 別の台の初期化や削除で残ったエントリが返ることはない。有効性は呼び出し側が DB で確認する。
 type cachedImage struct {
@@ -22,27 +24,34 @@ type cachedImage struct {
 
 type imageCache struct {
 	mu       sync.Mutex
+	local    *sqlx.DB
 	maxBytes int
 	bytes    int
 	entries  map[string]*list.Element
 	recent   *list.List
 }
 
-func newImageCache(maxBytes int) *imageCache {
-	return &imageCache{maxBytes: maxBytes, entries: map[string]*list.Element{}, recent: list.New()}
+func newImageCache(local *sqlx.DB, maxBytes int) *imageCache {
+	return &imageCache{local: local, maxBytes: maxBytes, entries: map[string]*list.Element{}, recent: list.New()}
 }
 
+const imageSelect = `
+   SELECT i.id, i.owner_user_id, u.secret_key_hash, i.media_type, i.data
+   FROM image_objects i JOIN users u ON u.id = i.owner_user_id
+  `
+
+// load はメモリ、ローカルの初期画像、共有 DB の順に探す。
 func (c *imageCache) load(ctx context.Context, db sqlx.QueryerContext, id string) (*cachedImage, error) {
 	if image := c.get(id); image != nil {
 		return image, nil
 	}
 	image := &cachedImage{}
-	if err := sqlx.GetContext(ctx, db, image, `
-   SELECT i.id, i.owner_user_id, u.secret_key_hash, i.media_type, i.data
-   FROM image_objects i JOIN users u ON u.id = i.owner_user_id
-   WHERE i.id = $1
-  `, id); err != nil {
-		return nil, err
+	err := sqlx.GetContext(ctx, c.local, image, imageSelect+`WHERE i.id = $1`, id)
+	if err != nil {
+		image = &cachedImage{}
+		if err := sqlx.GetContext(ctx, db, image, imageSelect+`WHERE i.id = $1`, id); err != nil {
+			return nil, err
+		}
 	}
 	c.put(image)
 	return image, nil
@@ -61,12 +70,12 @@ func (c *imageCache) loadMany(ctx context.Context, db sqlx.QueryerContext, ids [
 	if len(missing) == 0 {
 		return images, nil
 	}
+	missing = c.selectInto(ctx, c.local, images, missing)
+	if len(missing) == 0 {
+		return images, nil
+	}
 	var loaded []*cachedImage
-	if err := sqlx.SelectContext(ctx, db, &loaded, `
-   SELECT i.id, i.owner_user_id, u.secret_key_hash, i.media_type, i.data
-   FROM image_objects i JOIN users u ON u.id = i.owner_user_id
-   WHERE i.id = ANY($1::varchar[])
-  `, missing); err != nil {
+	if err := sqlx.SelectContext(ctx, db, &loaded, imageSelect+`WHERE i.id = ANY($1::varchar[])`, missing); err != nil {
 		return nil, err
 	}
 	for _, image := range loaded {
@@ -74,6 +83,26 @@ func (c *imageCache) loadMany(ctx context.Context, db sqlx.QueryerContext, ids [
 		c.put(image)
 	}
 	return images, nil
+}
+
+// selectInto はローカルにある画像を images に入れ、見つからなかった ID を返す。
+// ローカルの DB が使えないときは共有 DB に任せる。
+func (c *imageCache) selectInto(ctx context.Context, db sqlx.QueryerContext, images map[string]*cachedImage, ids []string) []string {
+	var loaded []*cachedImage
+	if err := sqlx.SelectContext(ctx, db, &loaded, imageSelect+`WHERE i.id = ANY($1::varchar[])`, ids); err != nil {
+		return ids
+	}
+	for _, image := range loaded {
+		images[image.ID] = image
+		c.put(image)
+	}
+	missing := make([]string, 0)
+	for _, id := range ids {
+		if _, ok := images[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	return missing
 }
 
 func (c *imageCache) get(id string) *cachedImage {
