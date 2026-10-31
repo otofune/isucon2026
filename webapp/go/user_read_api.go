@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v5"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
@@ -27,6 +29,30 @@ func normalizeSearchText(value string) string {
 	return norm.NFC.String(cases.Fold().String(norm.NFC.String(value)))
 }
 
+const searchTextCacheLimit = 200_000
+
+var searchTextCache = struct {
+	sync.RWMutex
+	values map[string]string
+}{values: map[string]string{}}
+
+func cachedSearchText(value string) string {
+	searchTextCache.RLock()
+	normalized, ok := searchTextCache.values[value]
+	searchTextCache.RUnlock()
+	if ok {
+		return normalized
+	}
+	normalized = normalizeSearchText(value)
+	searchTextCache.Lock()
+	if len(searchTextCache.values) >= searchTextCacheLimit {
+		clear(searchTextCache.values)
+	}
+	searchTextCache.values[value] = normalized
+	searchTextCache.Unlock()
+	return normalized
+}
+
 func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		var input searchUsersRequest
@@ -41,8 +67,13 @@ func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		ctx := c.Request().Context()
 		viewer := GetSession(c).UserID
-		var users []User
-		if err := h.DB.SelectContext(ctx, &users, `SELECT `+strings.Join(userColumns, ", ")+` FROM users WHERE status='active' AND id<>$1 AND ($2='' OR (username,id)>($2,$3)) ORDER BY username, id`, viewer, input.BeforeUsername, input.BeforeID); err != nil {
+		// 判定に必要な列だけ全件取得し、該当した利用者だけ詳細を読む。
+		var candidates []struct {
+			ID          string `db:"id"`
+			Username    string `db:"username"`
+			DisplayName string `db:"display_name"`
+		}
+		if err := h.DB.SelectContext(ctx, &candidates, `SELECT id, username, display_name FROM users WHERE status='active' AND id<>$1 AND ($2='' OR (username,id)>($2,$3)) ORDER BY username, id`, viewer, input.BeforeUsername, input.BeforeID); err != nil {
 			return err
 		}
 		blocked, err := getBlockedUserIDs(ctx, h.DB, viewer)
@@ -50,23 +81,37 @@ func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		query := normalizeSearchText(input.Q)
-		items := make([]relationshipUserResponse, 0)
-		for _, user := range users {
-			if !strings.Contains(normalizeSearchText(user.Username), query) && !strings.Contains(normalizeSearchText(user.DisplayName), query) {
+		matchedIDs := make([]string, 0, 51)
+		for _, user := range candidates {
+			if !strings.Contains(cachedSearchText(user.Username), query) && !strings.Contains(cachedSearchText(user.DisplayName), query) {
 				continue
 			}
 			if blocked[user.ID] {
 				continue
 			}
-			if err := user.setImageKey(); err != nil {
+			matchedIDs = append(matchedIDs, user.ID)
+			if len(matchedIDs) == 51 {
+				break
+			}
+		}
+		items := make([]relationshipUserResponse, 0, len(matchedIDs))
+		if len(matchedIDs) > 0 {
+			statement, args, err := sqlx.In(`SELECT `+strings.Join(userColumns, ", ")+` FROM users WHERE status='active' AND id IN (?) ORDER BY username, id`, matchedIDs)
+			if err != nil {
 				return err
 			}
-			if user.AccountType != "certified_public" {
-				user.Bio = ""
+			var users []User
+			if err := h.DB.SelectContext(ctx, &users, h.DB.Rebind(statement), args...); err != nil {
+				return err
 			}
-			items = append(items, newRelationshipUserResponse(user))
-			if len(items) == 51 {
-				break
+			for _, user := range users {
+				if err := user.setImageKey(); err != nil {
+					return err
+				}
+				if user.AccountType != "certified_public" {
+					user.Bio = ""
+				}
+				items = append(items, newRelationshipUserResponse(user))
 			}
 		}
 		hasMore := len(items) > 50

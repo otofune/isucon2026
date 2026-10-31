@@ -35,9 +35,17 @@ func beginRelationshipTx(ctx context.Context, db *sqlx.DB, actor, target string)
 	if err != nil {
 		return nil, err
 	}
-	// 1回の SQL で両方をロックする。他の処理の Go の min/max と同じバイト順にする。
+	// 同じ2人の関係変更だけを advisory lock で直列化する。人気のある利用者に申請が
+	// 集中しても待たないよう、利用者の行は共有ロックにする。退会やコメントが取る
+	// FOR NO KEY UPDATE とは競合するので、それらとの整合性は保たれる。
 	var lockedIDs []string
-	if err := tx.SelectContext(ctx, &lockedIDs, `SELECT id FROM users WHERE id IN ($1, $2) AND status='active' ORDER BY id COLLATE "C" FOR NO KEY UPDATE`, actor, target); err != nil {
+	if err := tx.SelectContext(ctx, &lockedIDs, `
+  WITH pair AS MATERIALIZED (SELECT pg_advisory_xact_lock(hashtextextended($3, 0)))
+  SELECT u.id FROM users u, pair
+  WHERE u.id IN ($1, $2) AND u.status='active'
+  ORDER BY u.id COLLATE "C"
+  FOR SHARE OF u
+ `, actor, target, min(actor, target)+":"+max(actor, target)); err != nil {
 		tx.Rollback()
 		return nil, err
 	}

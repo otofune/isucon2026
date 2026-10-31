@@ -74,8 +74,13 @@ func ActionLogMiddleware(minLevel string, output io.Writer) echo.MiddlewareFunc 
 			if logLevelRanks[level] < logLevelRanks[minLevel] {
 				return nil
 			}
-
+			// isureal-guard が使う行とエラーだけを出力し、CPU と journal の負荷を抑える。
 			route := c.RouteInfo()
+			abuse, _ := c.Get("abuse").(string)
+			isLoginFailure := route.Path == "/api/auth/login" && status == http.StatusUnauthorized
+			if level != "error" && abuse == "" && !isLoginFailure {
+				return nil
+			}
 			entry := map[string]any{
 				"level":   level,
 				"action":  nil,
@@ -96,7 +101,6 @@ func ActionLogMiddleware(minLevel string, output io.Writer) echo.MiddlewareFunc 
 					entry["username"] = username
 				}
 			}
-			abuse, _ := c.Get("abuse").(string)
 			if abuse != "" {
 				entry["abuse"] = abuse
 			}
