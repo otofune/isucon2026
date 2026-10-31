@@ -6,7 +6,7 @@ usage() {
 Usage: ./restart.sh [--config-only | --postgresql]
   (no option)    Deploy webapp and restart the currently active language service.
   --config-only Copy system configuration and run daemon-reload; do not restart.
-  --postgresql  Copy system configuration and restart PostgreSQL on asia2.
+  --postgresql  Copy system configuration and restart PostgreSQL on this instance.
 Run as isucon in the instance checkout, after git pull --ff-only.
 EOF
 }
@@ -44,11 +44,11 @@ if [[ $mode == app ]]; then
     fi
   done
   [[ -n $language ]] || {
-    echo 'No app service is active. On asia2 use --config-only or --postgresql.' >&2
+    echo 'No app service is active. Use --config-only or --postgresql as appropriate.' >&2
     exit 1
   }
 elif [[ $mode == db && $is_db != true ]]; then
-  echo '--postgresql requires the running asia2 PostgreSQL instance.' >&2; exit 1
+  echo '--postgresql requires PostgreSQL to be running on this instance.' >&2; exit 1
 fi
 
 build_dir=$(mktemp -d /tmp/isucon2026-build.XXXXXXXX)
@@ -120,10 +120,10 @@ done
 if [[ $is_db == true ]]; then
   pg_root=etc/postgresql/16/main
   for name in postgresql.conf conf.d/isucon.conf; do
-    copy_config "$repo_root/system/asia2/$pg_root/$name" "/$pg_root/$name" postgres postgres
+    copy_config "$repo_root/system/$instance/$pg_root/$name" "/$pg_root/$name" postgres postgres
   done
   for name in pg_hba.conf pg_ident.conf; do
-    copy_config "$repo_root/system/asia2/$pg_root/$name" "/$pg_root/$name" postgres postgres 0640
+    copy_config "$repo_root/system/$instance/$pg_root/$name" "/$pg_root/$name" postgres postgres 0640
   done
 fi
 
