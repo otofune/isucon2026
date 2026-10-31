@@ -292,3 +292,17 @@ BEGIN
   SELECT * INTO u FROM users x WHERE x.id = p_actor;
   RETURN QUERY SELECT 'ok'::text, v_created, u.id::text, u.username::text, u.secret_key_hash, u.display_name, u.bio, u.profile_image_id::text, u.region, u.account_type, u.status;
 END $$;
+
+-- 検索用の一覧の版。トランザクションの中で上げるので、コミット前に新しい版は見えない。
+CREATE TABLE IF NOT EXISTS users_version (id int PRIMARY KEY, version bigint NOT NULL);
+INSERT INTO users_version (id, version) VALUES (1, 1) ON CONFLICT (id) DO NOTHING;
+
+DROP TRIGGER IF EXISTS users_version_bump ON users;
+DROP FUNCTION IF EXISTS isu_bump_users_version();
+CREATE FUNCTION isu_bump_users_version() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE users_version SET version = version + 1 WHERE id = 1;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER users_version_bump AFTER INSERT OR DELETE OR UPDATE OF username, display_name, status ON users
+  FOR EACH STATEMENT EXECUTE FUNCTION isu_bump_users_version();

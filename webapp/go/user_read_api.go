@@ -45,7 +45,7 @@ type userDirectory struct {
 	positions map[string]int
 }
 
-// directoryCache は検索用の一覧を持つ。版は内容のハッシュを毎回 DB で計算するので、
+// directoryCache は検索用の一覧を持つ。版はトリガーが同じトランザクションで上げるので、
 // 書き込みの直後でも古い一覧は使わない。一覧が変わっていたら、待っている検索を次の
 // 1回の読み直しに束ね、ロックを持ったまま DB を待たない。
 type directoryCache struct {
@@ -61,11 +61,9 @@ type directoryRefresh struct {
 	err       error
 }
 
-const directoryVersionExpression = `count(*) OVER ()::text || ':' || COALESCE(sum(hashtextextended(id || ':' || username || ':' || display_name, 0)::numeric) OVER (), 0)::text`
-
 func (d *directoryCache) load(ctx context.Context, db *sqlx.DB) (*userDirectory, error) {
 	var version string
-	if err := db.GetContext(ctx, &version, `SELECT count(*)::text || ':' || COALESCE(sum(hashtextextended(id || ':' || username || ':' || display_name, 0)::numeric), 0)::text FROM users WHERE status='active'`); err != nil {
+	if err := db.GetContext(ctx, &version, `SELECT version::text FROM users_version WHERE id = 1`); err != nil {
 		return nil, err
 	}
 	d.mu.Lock()
@@ -122,7 +120,7 @@ func fetchDirectory(db *sqlx.DB, previous *userDirectory) (*userDirectory, error
 		directoryEntry
 		Version string `db:"version"`
 	}
-	if err := db.SelectContext(ctx, &rows, `SELECT id, username, display_name, `+directoryVersionExpression+` AS version FROM users WHERE status='active' ORDER BY username, id`); err != nil {
+	if err := db.SelectContext(ctx, &rows, `SELECT id, username, display_name, (SELECT version::text FROM users_version WHERE id = 1) AS version FROM users WHERE status='active' ORDER BY username, id`); err != nil {
 		return nil, err
 	}
 	directory := &userDirectory{entries: make([]directoryEntry, len(rows)), positions: make(map[string]int, len(rows))}

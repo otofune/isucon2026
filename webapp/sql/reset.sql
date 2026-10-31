@@ -40,4 +40,7 @@ SELECT id, follower_id, followee_id, created_at, updated_at FROM initial_follows
 INSERT INTO block_relations (id, blocker_id, blocked_id, created_at)
 SELECT id, blocker_id, blocked_id, created_at FROM initial_block_relations;
 
+-- session_replication_role = replica ではトリガーが動かないので、ここで版を上げる。
+UPDATE users_version SET version = version + 1 WHERE id = 1;
+
 COMMIT;
