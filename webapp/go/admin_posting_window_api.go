@@ -43,7 +43,9 @@ func openPostingWindowHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		defer tx.Rollback()
-		if _, err := tx.ExecContext(ctx, `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		// 同じ地域の期間開始だけを直列化する。登録と競合しても、SSE は接続後に作られた
+		// 通知しか返さないので、開始中に登録した利用者の見え方は変わらない。
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('posting_window:' || $1::text))`, region); err != nil {
 			return err
 		}
 		var conflict bool

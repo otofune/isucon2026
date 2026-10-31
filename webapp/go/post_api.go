@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -91,22 +92,38 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		defer tx.Rollback()
-		var lockedUserID string
-		if err := tx.GetContext(ctx, &lockedUserID, `SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE`, userID); err != nil {
+		// 同じ利用者の重複投稿はこの行ロックで防ぐ。
+		var user User
+		if err := tx.GetContext(ctx, &user, `SELECT `+strings.Join(userColumns, ", ")+` FROM users WHERE id = $1 AND status = 'active' FOR NO KEY UPDATE`, userID); err != nil {
 			return err
 		}
-		user, err := getUser(ctx, tx, userID)
-		if err != nil {
+		if err := user.setImageKey(); err != nil {
 			return err
 		}
+		// 投稿同士は共有し、期間の切り替えとだけ競合させる。ロック待ちの間に切り替わると
+		// 0件になるので、新しい期間を読み直す。
 		var window struct {
-			ID        string    `db:"id"`
-			LocalDate time.Time `db:"local_date"`
-			StartsAt  time.Time `db:"starts_at"`
+			ID             string    `db:"id"`
+			LocalDate      time.Time `db:"local_date"`
+			StartsAt       time.Time `db:"starts_at"`
+			OnTimeDeadline time.Time `db:"on_time_deadline"`
+			Active         int       `db:"active"`
+			Deleted        int       `db:"deleted"`
 		}
-		err = tx.GetContext(ctx, &window, `SELECT id, local_date, starts_at FROM posting_windows WHERE region = $1 AND ended_at IS NULL FOR UPDATE`, user.Region)
+		const currentWindowQuery = `
+   SELECT w.id, w.local_date, w.starts_at, w.on_time_deadline, counts.active, counts.deleted
+   FROM posting_windows w, LATERAL (
+     SELECT count(*) FILTER (WHERE p.deleted_at IS NULL) AS active,
+            count(*) FILTER (WHERE p.deleted_at IS NOT NULL) AS deleted
+     FROM posts p JOIN posting_windows posted ON posted.id = p.posting_window_id
+     WHERE p.author_id = $2 AND posted.local_date = w.local_date
+   ) counts
+   WHERE w.region = $1 AND w.ended_at IS NULL
+   FOR SHARE OF w
+  `
+		err = tx.GetContext(ctx, &window, currentWindowQuery, user.Region, userID)
 		if errors.Is(err, sql.ErrNoRows) {
-			err = tx.GetContext(ctx, &window, `SELECT id, local_date, starts_at FROM posting_windows WHERE region = $1 AND ended_at IS NULL FOR UPDATE`, user.Region)
+			err = tx.GetContext(ctx, &window, currentWindowQuery, user.Region, userID)
 		}
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -114,41 +131,31 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 			}
 			return err
 		}
-		var counts struct {
-			Active  int `db:"active"`
-			Deleted int `db:"deleted"`
-		}
-		if err := tx.GetContext(ctx, &counts, `
-   SELECT count(*) FILTER (WHERE deleted_at IS NULL) AS active,
-          count(*) FILTER (WHERE deleted_at IS NOT NULL) AS deleted
-   FROM posts p JOIN posting_windows w ON w.id = p.posting_window_id
-   WHERE p.author_id = $1 AND w.local_date = $2
-  `, userID, window.LocalDate); err != nil {
-			return err
-		}
-		postedAt := time.Now().UTC()
-		if counts.Active != 0 || counts.Deleted >= 2 || postedAt.Before(window.StartsAt) {
+		postedAt := time.Now().UTC().Truncate(time.Microsecond)
+		if window.Active != 0 || window.Deleted >= 2 || postedAt.Before(window.StartsAt) {
 			return NewAPIError(http.StatusConflict, "post_slot_unavailable")
 		}
 		imageID := uuid.NewString()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO image_objects (id, owner_user_id, data, media_type, created_at) VALUES ($1, $2, $3, 'image/jpeg', $4)`, imageID, userID, imageData, postedAt); err != nil {
-			return err
-		}
 		postID := uuid.NewString()
 		if _, err := tx.ExecContext(ctx, `
+   WITH image AS (
+     INSERT INTO image_objects (id, owner_user_id, data, media_type, created_at)
+     VALUES ($4, $2, $12, 'image/jpeg', $11)
+   )
    INSERT INTO posts (id, author_id, posting_window_id, image_id, caption, visibility,
                       location_kind, latitude, longitude, locality, posted_at)
    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
   `, postID, userID, window.ID, imageID, input.Caption, input.Visibility,
-			location.Kind, location.Latitude, location.Longitude, location.Locality, postedAt); err != nil {
-			return err
-		}
-		post, err := getPost(ctx, tx, postID)
-		if err != nil {
+			location.Kind, location.Latitude, location.Longitude, location.Locality, postedAt, imageData); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
 			return err
+		}
+		post := Post{
+			ID: postID, AuthorID: userID, PostingWindowID: window.ID, ImageID: imageID,
+			Caption: input.Caption, Visibility: input.Visibility, PostLocation: location,
+			PostedAt: postedAt, OnTimeDeadline: window.OnTimeDeadline,
 		}
 		return c.JSON(http.StatusCreated, newPostResponse(post, user))
 	}
