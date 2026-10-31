@@ -18,7 +18,7 @@ const imageSignatureIterations = 1000
 // 署名は1件で HMAC を1000回計算するので、同じ画像の URL が同じになるよう期限を
 // この単位で切り捨て、結果を再利用する。ベンチマーカーは期限が発行からおよそ24時間の
 // 範囲にあることを検証するので、長くはできない。
-const imageURLExpiryStep = 10 * 60
+const imageURLExpiryStep = 60 * 60
 const imageSignatureCacheLimit = 500_000
 
 var imageSignatureCache = struct {
@@ -61,9 +61,12 @@ func imageSignature(key []byte, imageID string, exp int64) []byte {
 	cached, ok := imageSignatureCache.values[imageSignatureCacheKey(key, imageID, exp)]
 	imageSignatureCache.Unlock()
 	if ok {
+		observe("sign.hit", 0)
 		return cached
 	}
+	start := time.Now()
 	signature := computeImageSignature(key, imageID, exp)
+	observe("sign.compute", time.Since(start))
 	storeImageSignature(key, imageID, exp, signature)
 	return signature
 }

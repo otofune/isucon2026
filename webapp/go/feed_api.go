@@ -47,6 +47,7 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 		if ranked && (input.BeforeScore == nil) != (input.BeforeID == "") {
 			return NewAPIError(http.StatusBadRequest, "invalid_pagination")
 		}
+		defer func(start time.Time) { observe("feed.total", time.Since(start)) }(time.Now())
 		ctx := c.Request().Context()
 		viewer, err := loadViewerContext(ctx, h.DB, GetSession(c).UserID)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -93,6 +94,7 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 			})
 		}
 		// 返す範囲の先頭だけを先に署名する。
+		signStart := time.Now()
 		batch := newSignatureBatch()
 		for _, post := range candidates[:min(len(candidates), 51)] {
 			batch.add(post.Author, post.ImageID)
@@ -114,6 +116,7 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 				break
 			}
 		}
+		observe("feed.sign", time.Since(signStart))
 		hasMore := len(items) > 50
 		if hasMore {
 			items = items[:50]

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v5"
@@ -45,11 +46,22 @@ type userDirectory struct {
 }
 
 // directoryCache は検索用の一覧を持つ。版は内容のハッシュを毎回 DB で計算するので、
-// 書き込みの直後でも古い一覧は使わない。
+// 書き込みの直後でも古い一覧は使わない。一覧が変わっていたら、待っている検索を次の
+// 1回の読み直しに束ね、ロックを持ったまま DB を待たない。
 type directoryCache struct {
 	mu      sync.Mutex
 	current *userDirectory
+	pending *directoryRefresh
+	running bool
 }
+
+type directoryRefresh struct {
+	done      chan struct{}
+	directory *userDirectory
+	err       error
+}
+
+const directoryVersionExpression = `count(*) OVER ()::text || ':' || COALESCE(sum(hashtextextended(id || ':' || username || ':' || display_name, 0)::numeric) OVER (), 0)::text`
 
 func (d *directoryCache) load(ctx context.Context, db *sqlx.DB) (*userDirectory, error) {
 	var version string
@@ -57,23 +69,85 @@ func (d *directoryCache) load(ctx context.Context, db *sqlx.DB) (*userDirectory,
 		return nil, err
 	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	if d.current != nil && d.current.version == version {
-		return d.current, nil
+		current := d.current
+		d.mu.Unlock()
+		return current, nil
 	}
-	var entries []directoryEntry
-	// 順序は DB の照合順序に従う。版は一覧を読む前の値なので、読む間の更新は次回に反映される。
-	if err := db.SelectContext(ctx, &entries, `SELECT id, username, display_name FROM users WHERE status='active' ORDER BY username, id`); err != nil {
+	if d.pending == nil {
+		d.pending = &directoryRefresh{done: make(chan struct{})}
+	}
+	refresh := d.pending
+	if !d.running {
+		d.running = true
+		go d.run(db)
+	}
+	d.mu.Unlock()
+	select {
+	case <-refresh.done:
+		return refresh.directory, refresh.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// run は待っている検索がなくなるまで読み直す。読み直しの開始より前に並んだ検索は、
+// その版以降の内容を受け取る。
+func (d *directoryCache) run(db *sqlx.DB) {
+	for {
+		d.mu.Lock()
+		refresh := d.pending
+		d.pending = nil
+		previous := d.current
+		if refresh == nil {
+			d.running = false
+			d.mu.Unlock()
+			return
+		}
+		d.mu.Unlock()
+		refresh.directory, refresh.err = fetchDirectory(db, previous)
+		if refresh.err == nil {
+			d.mu.Lock()
+			d.current = refresh.directory
+			d.mu.Unlock()
+		}
+		close(refresh.done)
+	}
+}
+
+func fetchDirectory(db *sqlx.DB, previous *userDirectory) (*userDirectory, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var rows []struct {
+		directoryEntry
+		Version string `db:"version"`
+	}
+	if err := db.SelectContext(ctx, &rows, `SELECT id, username, display_name, `+directoryVersionExpression+` AS version FROM users WHERE status='active' ORDER BY username, id`); err != nil {
 		return nil, err
 	}
-	positions := make(map[string]int, len(entries))
-	for i := range entries {
-		entries[i].searchUsername = normalizeSearchText(entries[i].Username)
-		entries[i].searchDisplayName = normalizeSearchText(entries[i].DisplayName)
-		positions[entries[i].Username+"\x00"+entries[i].ID] = i
+	directory := &userDirectory{entries: make([]directoryEntry, len(rows)), positions: make(map[string]int, len(rows))}
+	for i := range rows {
+		entry := rows[i].directoryEntry
+		directory.version = rows[i].Version
+		if index, ok := positionOf(previous, entry); ok && previous.entries[index].DisplayName == entry.DisplayName {
+			entry.searchUsername = previous.entries[index].searchUsername
+			entry.searchDisplayName = previous.entries[index].searchDisplayName
+		} else {
+			entry.searchUsername = normalizeSearchText(entry.Username)
+			entry.searchDisplayName = normalizeSearchText(entry.DisplayName)
+		}
+		directory.entries[i] = entry
+		directory.positions[entry.Username+"\x00"+entry.ID] = i
 	}
-	d.current = &userDirectory{version: version, entries: entries, positions: positions}
-	return d.current, nil
+	return directory, nil
+}
+
+func positionOf(directory *userDirectory, entry directoryEntry) (int, bool) {
+	if directory == nil {
+		return 0, false
+	}
+	index, ok := directory.positions[entry.Username+"\x00"+entry.ID]
+	return index, ok
 }
 
 func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {

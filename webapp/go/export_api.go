@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v5"
 )
@@ -17,6 +18,7 @@ type exportPostResponse struct {
 
 func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
+		defer func(start time.Time) { observe("export.total", time.Since(start)) }(time.Now())
 		ctx := c.Request().Context()
 		userID := GetSession(c).UserID
 		author, err := getUser(ctx, h.DB, userID)
@@ -42,12 +44,14 @@ func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 
+		signStart := time.Now()
 		batch := newSignatureBatch()
 		batch.addUser(author)
 		for _, post := range posts {
 			batch.add(author, post.ImageID)
 		}
 		batch.offload(ctx, h)
+		observe("export.offload", time.Since(signStart))
 
 		var body bytes.Buffer
 		writer := zip.NewWriter(&body)

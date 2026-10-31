@@ -72,6 +72,7 @@ func getMemoriesByDateHandler(h *HandlerContext) echo.HandlerFunc {
 }
 
 func listMemories(ctx context.Context, h *HandlerContext, userID string, start, end time.Time, beforeAt *time.Time, beforeID string) (getMemoriesResponse, error) {
+	defer func(start time.Time) { observe("memories.total", time.Since(start)) }(time.Now())
 	db := h.DB
 	var response getMemoriesResponse
 	if (beforeAt == nil) != (beforeID == "") {
@@ -93,6 +94,7 @@ func listMemories(ctx context.Context, h *HandlerContext, userID string, start, 
 	if err != nil {
 		return response, err
 	}
+	signStart := time.Now()
 	batch := newSignatureBatch()
 	for _, post := range posts {
 		batch.add(post.Author, post.ImageID)
@@ -115,6 +117,7 @@ func listMemories(ctx context.Context, h *HandlerContext, userID string, start, 
 		})
 	}
 	attachMemoryInteractions(items, interactions)
+	observe("memories.sign", time.Since(signStart))
 	response.Items = items
 	return response, nil
 }

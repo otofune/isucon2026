@@ -49,6 +49,7 @@ func internalResetHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		h.Sessions.clear()
 		h.Images.clear()
+		resetTimings()
 		if err := resetImageFiles(); err != nil {
 			return err
 		}
