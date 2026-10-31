@@ -48,6 +48,34 @@ func (c *imageCache) load(ctx context.Context, db sqlx.QueryerContext, id string
 	return image, nil
 }
 
+func (c *imageCache) loadMany(ctx context.Context, db sqlx.QueryerContext, ids []string) (map[string]*cachedImage, error) {
+	images := make(map[string]*cachedImage, len(ids))
+	missing := make([]string, 0)
+	for _, id := range ids {
+		if image := c.get(id); image != nil {
+			images[id] = image
+		} else {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) == 0 {
+		return images, nil
+	}
+	var loaded []*cachedImage
+	if err := sqlx.SelectContext(ctx, db, &loaded, `
+   SELECT i.id, i.owner_user_id, u.secret_key_hash, i.media_type, i.data
+   FROM image_objects i JOIN users u ON u.id = i.owner_user_id
+   WHERE i.id = ANY($1::varchar[])
+  `, missing); err != nil {
+		return nil, err
+	}
+	for _, image := range loaded {
+		images[image.ID] = image
+		c.put(image)
+	}
+	return images, nil
+}
+
 func (c *imageCache) get(id string) *cachedImage {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -55,6 +55,10 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
+		// 当日の投稿がなければ他人の投稿は1件も見えない。
+		if !viewer.HasPostedToday {
+			return c.JSON(http.StatusOK, getFeedResponse{Items: []feedItemResponse{}})
+		}
 		following := map[string]bool{}
 		if input.Feed == "following" {
 			var followeeIDs []string
@@ -69,11 +73,7 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 		if ranked {
 			beforePostedAt, beforeID = nil, ""
 		}
-		posts, err := selectPostsWithAuthor(ctx, h.DB, `
-   AND p.author_id <> $1 AND w.ended_at IS NULL
-   AND ($2::timestamptz IS NULL OR (p.posted_at, p.id) < ($2, $3))
-   ORDER BY p.posted_at DESC, p.id DESC
-  `, viewer.ID, beforePostedAt, beforeID)
+		posts, err := selectFeedCandidates(ctx, h.DB, viewer, input.Feed, following, beforePostedAt, beforeID)
 		if err != nil {
 			return err
 		}
@@ -120,6 +120,46 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		return c.JSON(http.StatusOK, getFeedResponse{Items: items, HasMore: hasMore})
 	}
+}
+
+// selectFeedCandidates はフィードに表示する投稿を SQL の段階で絞る。ランキング以外は
+// viewerContext.canView と matchesFeed の判定を SQL に写しているので、上限を掛けられる。
+// 判定そのものは呼び出し側に残し、この関数は候補を減らすだけにする。
+func selectFeedCandidates(ctx context.Context, db sqlx.QueryerContext, viewer viewerContext, feed string, following map[string]bool, beforePostedAt *time.Time, beforeID string) ([]PostWithAuthor, error) {
+	const common = `
+   AND p.author_id <> $1 AND w.ended_at IS NULL
+   AND ($2::timestamptz IS NULL OR (p.posted_at, p.id) < ($2, $3))
+   AND NOT p.author_id = ANY($4::varchar[])
+  `
+	const order = ` ORDER BY p.posted_at DESC, p.id DESC`
+	const page = ` LIMIT 51`
+	blocked := mapKeys(viewer.Blocked)
+	switch feed {
+	case "friends":
+		return selectPostsWithAuthor(ctx, db, common+` AND p.author_id = ANY($5::varchar[])`+order+page,
+			viewer.ID, beforePostedAt, beforeID, blocked, mapKeys(viewer.Friends))
+	case "public":
+		return selectPostsWithAuthor(ctx, db, common+` AND p.visibility = 'public'`+order+page,
+			viewer.ID, beforePostedAt, beforeID, blocked)
+	case "following":
+		return selectPostsWithAuthor(ctx, db, common+`
+   AND p.author_id = ANY($5::varchar[])
+   AND (p.visibility = 'public' OR p.author_id = ANY($6::varchar[])
+        OR (p.visibility = 'friends_of_friends' AND p.author_id = ANY($7::varchar[])))
+  `+order+page, viewer.ID, beforePostedAt, beforeID, blocked, mapKeys(following), mapKeys(viewer.Friends), mapKeys(viewer.FriendsOfFriends))
+	default:
+		return selectPostsWithAuthor(ctx, db, common+`
+   AND p.author_id = ANY($5::varchar[]) AND p.visibility IN ('public', 'friends_of_friends')
+  `+order, viewer.ID, beforePostedAt, beforeID, blocked, mapKeys(viewer.FriendsOfFriends))
+	}
+}
+
+func mapKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func rankedBefore(score int64, post Post, beforeScore int64, beforePostedAt time.Time, beforeID string) bool {
